@@ -34,44 +34,66 @@ function lruGet(map, key, ttl) {
   return null;
 }
 function retryOnce(fn) {
-  return Promise.resolve().then(fn).then(null, function (e) {
-    return delay(CFG.retryDelay).then(fn, function () { throw e; });
+  return Promise.resolve().then(fn, null).then(null, function () {
+    return delay(CFG.retryDelay).then(fn);
   });
 }
 
 var slots = {}, lastIn = {};
 function throttled(name, url, opt) {
   var h = opt && opt.headers ? opt.headers : UA;
+  var to = (opt && opt.timeout) || CFG.timeout;
   var gap = (name === "oct" || name === "at") ? CFG.octGap : CFG.gap;
-  var since = lastIn[name] || 0;
-  var need = Math.max(0, gap - (Date.now() - since));
-  lastIn[name] = Date.now() + need;
-  var acquire = function () {
+  var need = Math.max(0, gap - (Date.now() - (lastIn[name] || 0)));
+  var mark = function () { lastIn[name] = Date.now(); };
+  var acquireSlot = function () {
     var s = slots[name] || 0;
     if (s < CFG.sem) { slots[name] = s + 1; return Promise.resolve(true); }
-    if (need > 0) { slots[name] = 1; return Promise.resolve(true); }
     var start = Date.now();
     return new Promise(function (r) {
       (function poll() {
         if ((slots[name] || 0) < CFG.sem) { slots[name] = (slots[name] || 0) + 1; r(true); }
-        else if (Date.now() - start > CFG.timeout) r(false);
+        else if (Date.now() - start > to) r(false);
         else setTimeout(poll, 40);
       })();
     });
   };
+  var acquire = function () {
+    if (need > 0) return delay(need).then(function () { mark(); return acquireSlot(); });
+    mark();
+    return acquireSlot();
+  };
   return acquire().then(function (ok) {
-    if (!ok) throw new Error(name + ": busy");
-    var proc = fetch(url, { headers: h }).then(function (res) {
+    if (!ok) {
+      throw new Error(name + ": busy");
+    }
+    var done = false;
+    var release = function () {
+      if (done) return;
+      done = true;
       slots[name] = Math.max(0, (slots[name] || 1) - 1);
+    };
+    var ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    var init = { headers: h };
+    if (ctrl) init.signal = ctrl.signal;
+    var timer = null;
+    var proc = fetch(url, init).then(function (res) {
+      if (timer) clearTimeout(timer);
+      release();
       return res;
     }, function (e) {
-      slots[name] = Math.max(0, (slots[name] || 1) - 1);
+      if (timer) clearTimeout(timer);
+      release();
       throw e;
     });
-    return Promise.race([proc, delay(CFG.timeout).then(function () {
-      slots[name] = Math.max(0, (slots[name] || 1) - 1);
-      throw new Error(name + ": timeout");
-    })]);
+    return new Promise(function (resolve, reject) {
+      timer = setTimeout(function () {
+        if (ctrl) ctrl.abort();
+        release();
+        reject(new Error(name + ": timeout"));
+      }, to);
+      proc.then(resolve, reject);
+    });
   });
 }
 function ladder(fmts, fn) {
@@ -112,7 +134,8 @@ function selectedQuality(ctx, preferred) {
 }
 function normQ(q) {
   var s = String(q || "").toUpperCase();
-  if (s.indexOf("HIRES") !== -1 || s.indexOf("HI_RES") !== -1) return QUALITY.HIRES;
+  if (s.indexOf("HIRES") !== -1 || s.indexOf("HI_RES") !== -1 || s.indexOf("HI-RES") !== -1) return QUALITY.HIRES;
+  if (s.indexOf("FLAC") !== -1 && s.indexOf("24") !== -1) return QUALITY.HIRES;
   if (s.indexOf("LOSS") !== -1 || s.indexOf("FLAC") !== -1) return QUALITY.LOSSLESS;
   if (s === "LOW" || s === "128" || s.indexOf("MP3_128") !== -1) return QUALITY.LOW;
   return QUALITY.HIGH;
@@ -131,7 +154,11 @@ function qualityChain(ctx, target) {
   });
 }
 function wantFor(q) { return q === QUALITY.HIRES || q === QUALITY.LOSSLESS ? "lossless" : q === QUALITY.LOW ? "128" : "320"; }
-function withQuality(url, want) { return url.replace(/\/audio\/[^?]+/, "/audio/" + want); }
+function withQuality(url, want) {
+  var replaced = url.replace(/\/audio\/[^?]+/, "/audio/" + want);
+  if (replaced === url) throw new Error("oct: token has no audio path");
+  return replaced;
+}
 function qInfo(want) {
   if (want === "lossless") return { audioQuality: "LOSSLESS", bitrate: -1, codec: "FLAC" };
   var b = parseInt(want, 10);
@@ -174,8 +201,37 @@ function exactMatchOrInverse(item, parts) {
 }
 function nameOf(a) { return typeof a === "string" ? a : ((a && a.name) || ""); }
 
-var TIDAL_API = "https://not-use-my-tidal-niggas.francescone.workers.dev";
-var TIDAL_SEARCH = "https://lol.samidy.workers.dev";
+var TIDAL_API = null;
+var TIDAL_SEARCH = null;
+var GEO_URL = "https://raw.githubusercontent.com/KissAnotherDay/Geolier2-8spine/main/Geolier_tidal.8spine";
+var GEO_TTL = 3600000;
+var geoP = null;
+var geoStart = 0;
+function loadTidalConfig() {
+  if (geoP && (Date.now() - geoStart) < GEO_TTL) {
+    return geoP;
+  }
+  var p = retryOnce(function () {
+    return Promise.race([fetch(GEO_URL, { headers: { "Accept": "text/plain" } }), delay(CFG.timeout).then(function () { throw new Error("geo: timeout"); })]);
+  }).then(function (res) {
+    if (!res.ok) throw new Error("geo http " + res.status);
+    return res.text();
+  }).then(function (txt) {
+    var api = txt.match(/TIDAL_API\s*[:=]\s*["']([^"']+)["']/);
+    var search = txt.match(/TIDAL_SEARCH\s*[:=]\s*["']([^"']+)["']/);
+    if (!(api && api[1]) || !(search && search[1])) throw new Error("geo: no tidal instance");
+    TIDAL_API = api[1];
+    TIDAL_SEARCH = search[1];
+  }, function (e) {
+    throw e;
+  });
+  geoP = p;
+  geoStart = Date.now();
+  p.then(null, function () {
+    if (geoP === p) geoP = null;
+  });
+  return geoP;
+}
 function unwrapTidal(d) {
   if (!d) return [];
   if (Array.isArray(d)) return d;
@@ -188,7 +244,7 @@ function unwrapTidal(d) {
   }
   return [];
 }
-function mapTidal(t, prefix) {
+function mapTidal(t, prefix, lbl) {
   var artist = artistsOf(t);
   return {
     id: prefix + ":" + t.id,
@@ -199,26 +255,29 @@ function mapTidal(t, prefix) {
     duration: t.duration || 0,
     albumCover: (t.album && (t.album.cover || t.album.image)) ? "https://resources.tidal.com/images/" + String(t.album.cover || t.album.image).replace(/-/g, "/") + "/1280x1280.jpg" : "",
     explicit: !!t.explicit,
-    audioQuality: "FLAC 16-bit / 44.1 kHz",
+    audioQuality: lbl || "FLAC 16-bit / 44.1 kHz",
     isrc: t.isrc || null,
-    availableQualities: ["LOSSLESS", "HIGH", "LOW"],
+    availableQualities: availFor(lbl),
     _moduleTrack: t
   };
 }
-function tidalSearchLane(q, n) {
-  return throttled("tdl", TIDAL_SEARCH + "/search/?s=" + encodeURIComponent(q), { headers: { "Accept": "application/json" } }).then(okJson).then(function (d) {
-    var items = unwrapTidal(d);
-    if (!items.length) throw new Error("tdl: empty");
-    var parts = splitQuery(q);
-    var kept = items.filter(function (it) { return exactMatchOrInverse(it, parts); });
-    if (!kept.length) kept = items.slice(0, 1);
-    return kept.slice(0, n).map(function (t) { return mapTidal(t, "tdl"); });
+function tidalSearchLane(q, n, lbl) {
+  return loadTidalConfig().then(function () {
+    return throttled("tdl", TIDAL_SEARCH + "/search/?s=" + encodeURIComponent(q), { headers: { "Accept": "application/json" } }).then(okJson).then(function (d) {
+      var items = unwrapTidal(d);
+      if (!items.length) throw new Error("tdl: empty");
+      var parts = splitQuery(q);
+      var kept = items.filter(function (it) { return exactMatchOrInverse(it, parts); });
+      if (!kept.length) kept = items.slice(0, 1);
+      return kept.slice(0, n).map(function (t) { return mapTidal(t, "tdl", lbl); });
+    });
   });
 }
 function tdlStream(id, q) {
-  var chain = q === QUALITY.LOW || q === QUALITY.HIGH ? ["AACLC", "HEAACV1"] : q === QUALITY.HIRES ? ["FLAC_HIRES", "FLAC", "AACLC", "HEAACV1"] : ["FLAC", "AACLC", "HEAACV1"];
-  return ladder(chain, function (fmt) {
-    return throttled("at", TIDAL_API + "/trackManifests/?id=" + encodeURIComponent(id) + "&formats=" + fmt, { headers: { "Accept": "application/json" } }).then(okJson).then(function (d) {
+  var chain = q === QUALITY.LOW ? ["HEAACV1", "AACLC"] : q === QUALITY.HIGH ? ["AACLC", "HEAACV1"] : q === QUALITY.HIRES ? ["FLAC_HIRES", "FLAC", "AACLC", "HEAACV1"] : ["FLAC", "AACLC", "HEAACV1"];
+  return loadTidalConfig().then(function () {
+    return ladder(chain, function (fmt) {
+      return throttled("at", TIDAL_API + "/trackManifests/?id=" + encodeURIComponent(id) + "&formats=" + fmt, { headers: { "Accept": "application/json" }, timeout: 20000 }).then(okJson).then(function (d) {
       var node = (d && d.data) || d || {};
       var attrs = node.attributes || node;
       if (attrs && attrs.isError) {
@@ -242,14 +301,19 @@ function tdlStream(id, q) {
         track: ql,
         mimeType: fmt.indexOf("FLAC") === 0 ? "audio/flac" : "audio/mp4"
       };
+    }, function (e) {
+      throw e;
     });
+  });
   });
 }
 function tidalByIsrc(isrc, q) {
-  return throttled("tdl", TIDAL_SEARCH + "/search/?i=" + encodeURIComponent(isrc), { headers: { "Accept": "application/json" } }).then(okJson).then(function (d) {
-    var items = unwrapTidal(d);
-    if (!items.length) throw new Error("tdl: isrc miss");
-    return tdlStream(String(items[0].id), q);
+  return loadTidalConfig().then(function () {
+    return throttled("tdl", TIDAL_SEARCH + "/search/?i=" + encodeURIComponent(isrc), { headers: { "Accept": "application/json" }, timeout: 25000 }).then(okJson).then(function (d) {
+      var items = unwrapTidal(d);
+      if (!items.length) throw new Error("tdl: isrc miss");
+      return tdlStream(String(items[0].id), q);
+    });
   });
 }
 function deezerByIsrc(isrc, q) {
@@ -262,11 +326,17 @@ function deezerByIsrc(isrc, q) {
 function resolveIsrc(isrc, q) {
   isrc = String(isrc || "").toUpperCase();
   if (!ISRC_RE.test(isrc)) return Promise.reject(new Error("bad isrc (not ISRC format)"));
-  return deezerByIsrc(isrc, q).then(null, function () {
+  return deezerByIsrc(isrc, q).then(null, function (e) {
     return tidalByIsrc(isrc, q);
   });
 }
 
+function availFor(lbl) {
+  if (lbl === "HI-RES FLAC 24-bit") return ["HI_RES_LOSSLESS", "LOSSLESS", "HIGH", "LOW"];
+  if (lbl === "MP3 320kbps") return ["HIGH", "LOSSLESS", "LOW"];
+  if (lbl === "MP3 128kbps") return ["LOW", "HIGH", "LOSSLESS"];
+  return ["LOSSLESS", "HIGH", "LOW"];
+}
 var octTokens = {}, scache = {};
 function mapDeezerTrack(t, lbl) {
   var album = t.album || {};
@@ -279,8 +349,9 @@ function mapDeezerTrack(t, lbl) {
     duration: t.duration || 0,
     albumCover: (album.cover_big || album.cover_medium || album.cover_xl) || "",
     explicit: !!t.explicit,
+    isrc: t.isrc || null,
     audioQuality: lbl,
-    availableQualities: ["HI_RES_LOSSLESS", "LOSSLESS", "HIGH", "LOW"],
+    availableQualities: availFor(lbl),
     _moduleTrack: t
   };
 }
@@ -288,7 +359,24 @@ function octSearch(q, n, lbl) {
   return throttled("oct", CFG.octave + "/api/search?q=" + encodeURIComponent(q)).then(okJson).then(function (d) {
     var items = (d && d.tracks) || [];
     if (!items.length) throw new Error("oct: empty");
-    return items.slice(0, n).map(function (t) { return mapDeezerTrack(t, lbl); });
+    return enrichIsrc(q, items).then(function (list) {
+      return list.slice(0, n).map(function (t) { return mapDeezerTrack(t, lbl); });
+    });
+  });
+}
+function enrichIsrc(q, items) {
+  var need = items.filter(function (t) { return !t.isrc; });
+  if (!need.length) return Promise.resolve(items);
+  return throttled("dzr", CFG.deezerPub + "/search?q=" + encodeURIComponent(q) + "&limit=25").then(okJson).then(function (d) {
+    var byId = {};
+    (d && d.data || []).forEach(function (x) { if (x && x.id != null && x.isrc) byId[String(x.id)] = x.isrc; });
+    return items.map(function (t) {
+      var key = String(t.id);
+      if (!t.isrc && byId[key]) t.isrc = byId[key];
+      return t;
+    });
+  }, function () {
+    return items;
   });
 }
 function isPreviewUrl(u) {
@@ -326,10 +414,20 @@ function isrcFromDeezer(id) {
     return String(d.isrc).toUpperCase();
   });
 }
+function deezerReadable(id) {
+  return throttled("dzr", CFG.deezerPub + "/track/" + encodeURIComponent(id)).then(okJson).then(function (d) {
+    if (!d || d.id == null) throw new Error("dzr: miss");
+    return d.readable !== false;
+  });
+}
 function parseTrackId(id) {
   var s = String(id || "");
   var m = s.match(/^([a-z]{2,4}):(.+)$/i);
-  if (m) return { type: m[1].toLowerCase(), value: m[2] };
+  if (m) {
+    var t = m[1].toLowerCase();
+    if (t === "oct" || t === "dzr" || t === "tdl" || t === "isrc") return { type: t, value: m[2] };
+    return { type: "bad", value: s };
+  }
   if (ISRC_RE.test(s)) return { type: "isrc", value: s.toUpperCase() };
   return { type: "oct", value: s.replace(/\D/g, "") };
 }
@@ -340,15 +438,65 @@ function getTrackStreamUrl(trackId, quality, ctx) {
   var flex = !strictMode(ctx);
   var p = parseTrackId(id);
   var flow;
+  if (p.type === "bad") return Promise.reject(new Error("oct: bad track id"));
   if (p.type === "isrc") flow = ladder(chain, function (q) { return resolveIsrc(p.value, q); });
-  else if (p.type === "oct" || p.type === "dzr") flow = octStream(p.value, chain, flex);
+  else if (p.type === "oct" || p.type === "dzr") flow = deezerReadable(p.value).then(function (ok) {
+    if (!ok) return isrcFromDeezer(p.value).then(function (isrc) {
+      if (!ISRC_RE.test(isrc)) return Promise.reject(new Error("oct: not readable"));
+      return ladder(chain, function (q) { return resolveIsrc(isrc, q); });
+    });
+    return octStream(p.value, chain, flex);
+  }, function () {
+    return isrcFromDeezer(p.value).then(function (isrc) {
+      if (!ISRC_RE.test(isrc)) return Promise.reject(new Error("oct: not readable"));
+      return ladder(chain, function (q) { return resolveIsrc(isrc, q); });
+    });
+  });
   else if (p.type === "tdl") flow = ladder(chain, function (q) { return retryOnce(function () { return tdlStream(p.value, q); }); });
   else flow = octStream(p.value, chain, flex);
   return flow.then(function (r) {
     r.track = r.track || {};
     r.track.id = id;
+    var st = r.streamType || "direct";
+    if (st === "hls") {
+      r.streamType = "hls";
+      r.mimeType = "application/vnd.apple.mpegurl";
+    } else if (r.mimeType && String(r.mimeType).indexOf("mpegurl") !== -1) {
+      r.streamType = "hls";
+      r.mimeType = "application/vnd.apple.mpegurl";
+    } else if (String(r.streamUrl || "").indexOf(".m3u8") !== -1) {
+      r.streamType = "hls";
+      r.mimeType = "application/vnd.apple.mpegurl";
+    } else {
+      r.streamType = "direct";
+    }
+    r.codec = r.codec || r.track.codec || null;
+    if (r.codec) r.codec = String(r.codec).toLowerCase();
+    r.mimeType = r.mimeType || r.track.mimeType || (r.codec ? "audio/" + String(r.codec).toLowerCase() : null);
+    r.audioQuality = r.audioQuality || r.track.audioQuality || null;
+    r.bitrate = r.bitrate || r.track.bitrate || null;
+    r.bitDepth = r.bitDepth || r.track.bitDepth || null;
+    r.sampleRate = r.sampleRate || r.track.sampleRate || null;
     return r;
+  }, function (e) {
+    throw e;
   });
+}
+
+function tidalByQuery(q, target) {
+  return loadTidalConfig().then(function () {
+    return throttled("tdl", TIDAL_SEARCH + "/search/?s=" + encodeURIComponent(q), { headers: { "Accept": "application/json" } }).then(okJson).then(function (d) {
+      var items = unwrapTidal(d);
+      if (!items.length) throw new Error("tdl: query miss");
+      var parts = splitQuery(q);
+      var kept = items.filter(function (it) { return exactMatchOrInverse(it, parts); });
+      if (!kept.length) kept = items.slice(0, 1);
+      return tdlStream(String(kept[0].id), target);
+    });
+  });
+}
+function getTrackDownloadUrl(trackId, quality, ctx) {
+  return getTrackStreamUrl(trackId, quality, ctx);
 }
 
 function searchTracks(query, limit, ctx) {
@@ -356,20 +504,24 @@ function searchTracks(query, limit, ctx) {
   var lbl = searchQualityLabel(normQ(selectedQuality(ctx, null)));
   var key = String(query) + "|" + n + "|" + lbl;
   var hit = lruGet(scache, key, CFG.searchTtl);
-  if (hit) return Promise.resolve(JSON.parse(JSON.stringify(hit)));
+  if (hit) {
+    return Promise.resolve(JSON.parse(JSON.stringify(hit)));
+  }
   var attempt = function (fn, rest) {
     return fn().then(function (tracks) {
       if (!tracks.length && rest.length) return attempt(rest[0], rest.slice(1));
       var meta = { tracks: tracks, total: tracks.length };
-      lruPut(scache, key, meta, CFG.searchTtl);
+      if (tracks.length) lruPut(scache, key, meta, CFG.searchTtl);
       return meta;
-    }, function () {
-      if (!rest.length) return { tracks: [], total: 0 };
+    }, function (e) {
+      if (!rest.length) {
+        throw new Error("search: all providers failed" + (e ? (": " + e.message) : ""));
+      }
       return attempt(rest[0], rest.slice(1));
     });
   };
   return attempt(function () { return octSearch(query, n, lbl); }, [
-    function () { return tidalSearchLane(query, n); }
+    function () { return tidalSearchLane(query, n, lbl); }
   ]);
 }
 
@@ -398,7 +550,7 @@ function getAlbum(id) {
           albumCover: (album.cover_big || album.cover_medium) || "",
           explicit: !!t.explicit_lyrics,
           audioQuality: "FLAC 16-bit / 44.1 kHz",
-          availableQualities: ["HI_RES_LOSSLESS", "LOSSLESS", "HIGH", "LOW"],
+          availableQualities: availFor("FLAC 16-bit / 44.1 kHz"),
           _moduleTrack: t
         };
       })
@@ -410,21 +562,23 @@ function getAlbum(id) {
     });
   }
   if (p.type === "tdl") {
-    return throttled("tdl", TIDAL_SEARCH + "/album/?id=" + encodeURIComponent(p.value), { headers: { "Accept": "application/json" } }).then(okJson).then(function (d) {
-      var a = (d && d.data) || {};
-      var items = ((a.items) || []).map(function (x) { return x && x.item ? x.item : x; }).filter(function (t) { return t && t.id; });
-      if (!items.length) throw new Error("tdl: album empty");
-      return {
-        album: {
-          id: "tdl:" + a.id,
-          title: a.title || "",
-          artist: (a.artist && a.artist.name) || "",
-          cover: a.cover ? "https://resources.tidal.com/images/" + String(a.cover).replace(/-/g, "/") + "/1280x1280.jpg" : "",
-          releaseDate: a.releaseDate || "",
-          nbTracks: items.length
-        },
-        tracks: items.map(function (t) { return mapTidal(t, "tdl"); })
-      };
+    return loadTidalConfig().then(function () {
+      return throttled("tdl", TIDAL_SEARCH + "/album/?id=" + encodeURIComponent(p.value), { headers: { "Accept": "application/json" } }).then(okJson).then(function (d) {
+        var a = (d && d.data) || {};
+        var items = ((a.items) || []).map(function (x) { return x && x.item ? x.item : x; }).filter(function (t) { return t && t.id; });
+        if (!items.length) throw new Error("tdl: album empty");
+        return {
+          album: {
+            id: "tdl:" + a.id,
+            title: a.title || "",
+            artist: (a.artist && a.artist.name) || "",
+            cover: a.cover ? "https://resources.tidal.com/images/" + String(a.cover).replace(/-/g, "/") + "/1280x1280.jpg" : "",
+            releaseDate: a.releaseDate || "",
+            nbTracks: items.length
+          },
+          tracks: items.map(function (t) { return mapTidal(t, "tdl"); })
+        };
+      });
     });
   }
   return Promise.reject(new Error("unsupported " + p.type));
@@ -455,7 +609,7 @@ return {
   id: "liver",
   name: "Liver",
   author: "Livie",
-  version: "3.2.0",
+  version: "3.3.1",
   description: "best module in the universe",
   labels: ["MP3", "FLAC", "LOSSLESS", "MULTI-SOURCE"],
 
@@ -486,6 +640,7 @@ return {
 
   searchTracks: searchTracks,
   getTrackStreamUrl: getTrackStreamUrl,
+  getTrackDownloadUrl: getTrackDownloadUrl,
   getAlbum: getAlbum,
   getArtist: getArtist
 };
