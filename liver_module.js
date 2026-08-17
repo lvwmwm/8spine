@@ -176,6 +176,27 @@ function nameOf(a) { return typeof a === "string" ? a : ((a && a.name) || ""); }
 
 var TIDAL_API = "https://is-my-tidal-nigga.francescone.workers.dev";
 var TIDAL_SEARCH = "https://lol.samidy.workers.dev";
+var GEO_URL = "https://raw.githubusercontent.com/KissAnotherDay/Geolier2-8spine/main/Geolier_tidal.8spine";
+var GEO_TTL = 3600000;
+var geoP = null;
+var geoAt = 0;
+function loadTidalConfig() {
+  if (geoP && (Date.now() - geoAt) < GEO_TTL) return geoP;
+  geoP = fetch(GEO_URL, { headers: { "Accept": "text/plain" } }).then(function (res) {
+    if (!res.ok) throw new Error("geo http " + res.status);
+    return res.text();
+  }).then(function (txt) {
+    var api = txt.match(/var TIDAL_API\s*=\s*"([^"]+)"/);
+    var search = txt.match(/var TIDAL_SEARCH\s*=\s*"([^"]+)"/);
+    if (api && api[1]) TIDAL_API = api[1];
+    if (search && search[1]) TIDAL_SEARCH = search[1];
+  }, function (e) {
+    console.warn("geo cfg fail: " + e.message);
+  }).then(function () {
+    geoAt = Date.now();
+  });
+  return geoP;
+}
 function unwrapTidal(d) {
   if (!d) return [];
   if (Array.isArray(d)) return d;
@@ -206,19 +227,22 @@ function mapTidal(t, prefix) {
   };
 }
 function tidalSearchLane(q, n) {
-  return throttled("tdl", TIDAL_SEARCH + "/search/?s=" + encodeURIComponent(q), { headers: { "Accept": "application/json" } }).then(okJson).then(function (d) {
-    var items = unwrapTidal(d);
-    if (!items.length) throw new Error("tdl: empty");
-    var parts = splitQuery(q);
-    var kept = items.filter(function (it) { return exactMatchOrInverse(it, parts); });
-    if (!kept.length) kept = items.slice(0, 1);
-    return kept.slice(0, n).map(function (t) { return mapTidal(t, "tdl"); });
+  return loadTidalConfig().then(function () {
+    return throttled("tdl", TIDAL_SEARCH + "/search/?s=" + encodeURIComponent(q), { headers: { "Accept": "application/json" } }).then(okJson).then(function (d) {
+      var items = unwrapTidal(d);
+      if (!items.length) throw new Error("tdl: empty");
+      var parts = splitQuery(q);
+      var kept = items.filter(function (it) { return exactMatchOrInverse(it, parts); });
+      if (!kept.length) kept = items.slice(0, 1);
+      return kept.slice(0, n).map(function (t) { return mapTidal(t, "tdl"); });
+    });
   });
 }
 function tdlStream(id, q) {
   var chain = q === QUALITY.LOW || q === QUALITY.HIGH ? ["AACLC", "HEAACV1"] : q === QUALITY.HIRES ? ["FLAC_HIRES", "FLAC", "AACLC", "HEAACV1"] : ["FLAC", "AACLC", "HEAACV1"];
-  return ladder(chain, function (fmt) {
-    return throttled("at", TIDAL_API + "/trackManifests/?id=" + encodeURIComponent(id) + "&formats=" + fmt, { headers: { "Accept": "application/json" } }).then(okJson).then(function (d) {
+  return loadTidalConfig().then(function () {
+    return ladder(chain, function (fmt) {
+      return throttled("at", TIDAL_API + "/trackManifests/?id=" + encodeURIComponent(id) + "&formats=" + fmt, { headers: { "Accept": "application/json" } }).then(okJson).then(function (d) {
       var node = (d && d.data) || d || {};
       var attrs = node.attributes || node;
       if (attrs && attrs.isError) {
@@ -244,12 +268,15 @@ function tdlStream(id, q) {
       };
     });
   });
+  });
 }
 function tidalByIsrc(isrc, q) {
-  return throttled("tdl", TIDAL_SEARCH + "/search/?i=" + encodeURIComponent(isrc), { headers: { "Accept": "application/json" } }).then(okJson).then(function (d) {
-    var items = unwrapTidal(d);
-    if (!items.length) throw new Error("tdl: isrc miss");
-    return tdlStream(String(items[0].id), q);
+  return loadTidalConfig().then(function () {
+    return throttled("tdl", TIDAL_SEARCH + "/search/?i=" + encodeURIComponent(isrc), { headers: { "Accept": "application/json" } }).then(okJson).then(function (d) {
+      var items = unwrapTidal(d);
+      if (!items.length) throw new Error("tdl: isrc miss");
+      return tdlStream(String(items[0].id), q);
+    });
   });
 }
 function deezerByIsrc(isrc, q) {
@@ -430,21 +457,23 @@ function getAlbum(id) {
     });
   }
   if (p.type === "tdl") {
-    return throttled("tdl", TIDAL_SEARCH + "/album/?id=" + encodeURIComponent(p.value), { headers: { "Accept": "application/json" } }).then(okJson).then(function (d) {
-      var a = (d && d.data) || {};
-      var items = ((a.items) || []).map(function (x) { return x && x.item ? x.item : x; }).filter(function (t) { return t && t.id; });
-      if (!items.length) throw new Error("tdl: album empty");
-      return {
-        album: {
-          id: "tdl:" + a.id,
-          title: a.title || "",
-          artist: (a.artist && a.artist.name) || "",
-          cover: a.cover ? "https://resources.tidal.com/images/" + String(a.cover).replace(/-/g, "/") + "/1280x1280.jpg" : "",
-          releaseDate: a.releaseDate || "",
-          nbTracks: items.length
-        },
-        tracks: items.map(function (t) { return mapTidal(t, "tdl"); })
-      };
+    return loadTidalConfig().then(function () {
+      return throttled("tdl", TIDAL_SEARCH + "/album/?id=" + encodeURIComponent(p.value), { headers: { "Accept": "application/json" } }).then(okJson).then(function (d) {
+        var a = (d && d.data) || {};
+        var items = ((a.items) || []).map(function (x) { return x && x.item ? x.item : x; }).filter(function (t) { return t && t.id; });
+        if (!items.length) throw new Error("tdl: album empty");
+        return {
+          album: {
+            id: "tdl:" + a.id,
+            title: a.title || "",
+            artist: (a.artist && a.artist.name) || "",
+            cover: a.cover ? "https://resources.tidal.com/images/" + String(a.cover).replace(/-/g, "/") + "/1280x1280.jpg" : "",
+            releaseDate: a.releaseDate || "",
+            nbTracks: items.length
+          },
+          tracks: items.map(function (t) { return mapTidal(t, "tdl"); })
+        };
+      });
     });
   }
   return Promise.reject(new Error("unsupported " + p.type));
