@@ -53,7 +53,7 @@ function throttled(name, url, opt) {
     return new Promise(function (r) {
       (function poll() {
         if ((slots[name] || 0) < CFG.sem) { slots[name] = (slots[name] || 0) + 1; r(true); }
-        else if (Date.now() - start > CFG.timeout) r(false);
+        else if (Date.now() - start > to) r(false);
         else setTimeout(poll, 40);
       })();
     });
@@ -74,18 +74,24 @@ function throttled(name, url, opt) {
     var ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
     var init = { headers: h };
     if (ctrl) init.signal = ctrl.signal;
+    var timer = null;
     var proc = fetch(url, init).then(function (res) {
+      if (timer) clearTimeout(timer);
       release();
       return res;
     }, function (e) {
+      if (timer) clearTimeout(timer);
       release();
       throw e;
     });
-    return Promise.race([proc, delay(to).then(function () {
-      if (ctrl) ctrl.abort();
-      release();
-      throw new Error(name + ": timeout");
-    })]);
+    return new Promise(function (resolve, reject) {
+      timer = setTimeout(function () {
+        if (ctrl) ctrl.abort();
+        release();
+        reject(new Error(name + ": timeout"));
+      }, to);
+      proc.then(resolve, reject);
+    });
   });
 }
 function ladder(fmts, fn) {
@@ -234,10 +240,6 @@ function unwrapTidal(d) {
 }
 function mapTidal(t, prefix, lbl) {
   var artist = artistsOf(t);
-  var avail = lbl === "HI-RES FLAC 24-bit" ? ["HI_RES_LOSSLESS", "LOSSLESS", "HIGH", "LOW"]
-    : lbl === "MP3 320kbps" ? ["HIGH", "LOSSLESS", "LOW"]
-    : lbl === "MP3 128kbps" ? ["LOW", "HIGH", "LOSSLESS"]
-    : ["LOSSLESS", "HIGH", "LOW"];
   return {
     id: prefix + ":" + t.id,
     title: t.title || t.name || "",
@@ -249,7 +251,7 @@ function mapTidal(t, prefix, lbl) {
     explicit: !!t.explicit,
     audioQuality: lbl || "FLAC 16-bit / 44.1 kHz",
     isrc: t.isrc || null,
-    availableQualities: avail,
+    availableQualities: availFor(lbl),
     _moduleTrack: t
   };
 }
@@ -266,7 +268,7 @@ function tidalSearchLane(q, n, lbl) {
   });
 }
 function tdlStream(id, q) {
-  var chain = q === QUALITY.LOW || q === QUALITY.HIGH ? ["AACLC", "HEAACV1"] : q === QUALITY.HIRES ? ["FLAC_HIRES", "FLAC", "AACLC", "HEAACV1"] : ["FLAC", "AACLC", "HEAACV1"];
+  var chain = q === QUALITY.LOW ? ["HEAACV1", "AACLC"] : q === QUALITY.HIGH ? ["AACLC", "HEAACV1"] : q === QUALITY.HIRES ? ["FLAC_HIRES", "FLAC", "AACLC", "HEAACV1"] : ["FLAC", "AACLC", "HEAACV1"];
   return loadTidalConfig().then(function () {
     return ladder(chain, function (fmt) {
       return throttled("at", TIDAL_API + "/trackManifests/?id=" + encodeURIComponent(id) + "&formats=" + fmt, { headers: { "Accept": "application/json" }, timeout: 20000 }).then(okJson).then(function (d) {
@@ -321,6 +323,12 @@ function resolveIsrc(isrc, q) {
   });
 }
 
+function availFor(lbl) {
+  if (lbl === "HI-RES FLAC 24-bit") return ["HI_RES_LOSSLESS", "LOSSLESS", "HIGH", "LOW"];
+  if (lbl === "MP3 320kbps") return ["HIGH", "LOSSLESS", "LOW"];
+  if (lbl === "MP3 128kbps") return ["LOW", "HIGH", "LOSSLESS"];
+  return ["LOSSLESS", "HIGH", "LOW"];
+}
 var octTokens = {}, scache = {};
 function mapDeezerTrack(t, lbl) {
   var album = t.album || {};
@@ -335,7 +343,7 @@ function mapDeezerTrack(t, lbl) {
     explicit: !!t.explicit,
     isrc: t.isrc || null,
     audioQuality: lbl,
-    availableQualities: ["HI_RES_LOSSLESS", "LOSSLESS", "HIGH", "LOW"],
+    availableQualities: availFor(lbl),
     _moduleTrack: t
   };
 }
@@ -444,10 +452,13 @@ function getTrackStreamUrl(trackId, quality, ctx) {
     var st = r.streamType || "direct";
     if (st === "hls") {
       r.streamType = "hls";
+      r.mimeType = "application/vnd.apple.mpegurl";
     } else if (r.mimeType && String(r.mimeType).indexOf("mpegurl") !== -1) {
       r.streamType = "hls";
+      r.mimeType = "application/vnd.apple.mpegurl";
     } else if (String(r.streamUrl || "").indexOf(".m3u8") !== -1) {
       r.streamType = "hls";
+      r.mimeType = "application/vnd.apple.mpegurl";
     } else {
       r.streamType = "direct";
     }
@@ -512,10 +523,10 @@ function searchTracks(query, limit, ctx) {
     return fn().then(function (tracks) {
       if (!tracks.length && rest.length) return attempt(rest[0], rest.slice(1));
       var meta = { tracks: tracks, total: tracks.length };
-      lruPut(scache, key, meta, CFG.searchTtl);
+      if (tracks.length) lruPut(scache, key, meta, CFG.searchTtl);
       return meta;
     }, function (e) {
-      if (!rest.length) throw new Error("search: all providers failed");
+      if (!rest.length) throw new Error("search: all providers failed" + (e ? (": " + e.message) : ""));
       return attempt(rest[0], rest.slice(1));
     });
   };
@@ -549,7 +560,7 @@ function getAlbum(id) {
           albumCover: (album.cover_big || album.cover_medium) || "",
           explicit: !!t.explicit_lyrics,
           audioQuality: "FLAC 16-bit / 44.1 kHz",
-          availableQualities: ["HI_RES_LOSSLESS", "LOSSLESS", "HIGH", "LOW"],
+          availableQualities: availFor("FLAC 16-bit / 44.1 kHz"),
           _moduleTrack: t
         };
       })
