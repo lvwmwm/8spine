@@ -174,7 +174,7 @@ function exactMatchOrInverse(item, parts) {
 }
 function nameOf(a) { return typeof a === "string" ? a : ((a && a.name) || ""); }
 
-var TIDAL_API = "https://not-use-my-tidal-niggas.francescone.workers.dev";
+var TIDAL_API = "https://is-my-tidal-nigga.francescone.workers.dev";
 var TIDAL_SEARCH = "https://lol.samidy.workers.dev";
 function unwrapTidal(d) {
   if (!d) return [];
