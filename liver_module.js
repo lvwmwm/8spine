@@ -64,7 +64,9 @@ function throttled(name, url, opt) {
     return acquireSlot();
   };
   return acquire().then(function (ok) {
-    if (!ok) throw new Error(name + ": busy");
+    if (!ok) {
+      throw new Error(name + ": busy");
+    }
     var done = false;
     var release = function () {
       if (done) return;
@@ -206,7 +208,9 @@ var GEO_TTL = 3600000;
 var geoP = null;
 var geoStart = 0;
 function loadTidalConfig() {
-  if (geoP && (Date.now() - geoStart) < GEO_TTL) return geoP;
+  if (geoP && (Date.now() - geoStart) < GEO_TTL) {
+    return geoP;
+  }
   var p = retryOnce(function () {
     return Promise.race([fetch(GEO_URL, { headers: { "Accept": "text/plain" } }), delay(CFG.timeout).then(function () { throw new Error("geo: timeout"); })]);
   }).then(function (res) {
@@ -218,6 +222,8 @@ function loadTidalConfig() {
     if (!(api && api[1]) || !(search && search[1])) throw new Error("geo: no tidal instance");
     TIDAL_API = api[1];
     TIDAL_SEARCH = search[1];
+  }, function (e) {
+    throw e;
   });
   geoP = p;
   geoStart = Date.now();
@@ -295,6 +301,8 @@ function tdlStream(id, q) {
         track: ql,
         mimeType: fmt.indexOf("FLAC") === 0 ? "audio/flac" : "audio/mp4"
       };
+    }, function (e) {
+      throw e;
     });
   });
   });
@@ -318,7 +326,7 @@ function deezerByIsrc(isrc, q) {
 function resolveIsrc(isrc, q) {
   isrc = String(isrc || "").toUpperCase();
   if (!ISRC_RE.test(isrc)) return Promise.reject(new Error("bad isrc (not ISRC format)"));
-  return deezerByIsrc(isrc, q).then(null, function () {
+  return deezerByIsrc(isrc, q).then(null, function (e) {
     return tidalByIsrc(isrc, q);
   });
 }
@@ -470,6 +478,8 @@ function getTrackStreamUrl(trackId, quality, ctx) {
     r.bitDepth = r.bitDepth || r.track.bitDepth || null;
     r.sampleRate = r.sampleRate || r.track.sampleRate || null;
     return r;
+  }, function (e) {
+    throw e;
   });
 }
 
@@ -486,31 +496,7 @@ function tidalByQuery(q, target) {
   });
 }
 function getTrackDownloadUrl(trackId, quality, ctx) {
-  var id = String(trackId || "").trim();
-  var p = parseTrackId(id);
-  var flow;
-  if (p.type === "bad") return Promise.reject(new Error("dl: bad track id"));
-  if (p.type === "isrc") flow = tidalByIsrc(p.value, QUALITY.HIGH);
-  else if (p.type === "tdl") flow = tdlStream(p.value, QUALITY.HIGH);
-  else if ((p.type === "oct" || p.type === "dzr") && p.value) flow = isrcFromDeezer(p.value).then(function (isrc) {
-    if (!ISRC_RE.test(isrc)) return Promise.reject(new Error("dl: no isrc"));
-    return tidalByIsrc(isrc, QUALITY.HIGH);
-  });
-  else flow = tidalByQuery(id, QUALITY.HIGH);
-  return flow.then(function (r) {
-    r.track = r.track || {};
-    r.track.id = id;
-    var hls = String(r.streamUrl || "").indexOf(".m3u8") !== -1 || (r.mimeType && String(r.mimeType).indexOf("mpegurl") !== -1);
-    r.streamType = hls ? "hls" : "direct";
-    r.codec = r.codec || r.track.codec || null;
-    if (r.codec) r.codec = String(r.codec).toLowerCase();
-    r.mimeType = hls ? "application/vnd.apple.mpegurl" : (r.mimeType || r.track.mimeType || null);
-    r.audioQuality = r.audioQuality || r.track.audioQuality || null;
-    r.bitrate = r.bitrate || r.track.bitrate || null;
-    r.bitDepth = r.bitDepth || r.track.bitDepth || null;
-    r.sampleRate = r.sampleRate || r.track.sampleRate || null;
-    return r;
-  });
+  return getTrackStreamUrl(trackId, quality, ctx);
 }
 
 function searchTracks(query, limit, ctx) {
@@ -518,7 +504,9 @@ function searchTracks(query, limit, ctx) {
   var lbl = searchQualityLabel(normQ(selectedQuality(ctx, null)));
   var key = String(query) + "|" + n + "|" + lbl;
   var hit = lruGet(scache, key, CFG.searchTtl);
-  if (hit) return Promise.resolve(JSON.parse(JSON.stringify(hit)));
+  if (hit) {
+    return Promise.resolve(JSON.parse(JSON.stringify(hit)));
+  }
   var attempt = function (fn, rest) {
     return fn().then(function (tracks) {
       if (!tracks.length && rest.length) return attempt(rest[0], rest.slice(1));
@@ -526,7 +514,9 @@ function searchTracks(query, limit, ctx) {
       if (tracks.length) lruPut(scache, key, meta, CFG.searchTtl);
       return meta;
     }, function (e) {
-      if (!rest.length) throw new Error("search: all providers failed" + (e ? (": " + e.message) : ""));
+      if (!rest.length) {
+        throw new Error("search: all providers failed" + (e ? (": " + e.message) : ""));
+      }
       return attempt(rest[0], rest.slice(1));
     });
   };
@@ -619,7 +609,7 @@ return {
   id: "liver",
   name: "Liver",
   author: "Livie",
-  version: "3.2.0",
+  version: "3.3.1",
   description: "best module in the universe",
   labels: ["MP3", "FLAC", "LOSSLESS", "MULTI-SOURCE"],
 
