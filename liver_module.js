@@ -326,6 +326,12 @@ function isrcFromDeezer(id) {
     return String(d.isrc).toUpperCase();
   });
 }
+function deezerReadable(id) {
+  return throttled("dzr", CFG.deezerPub + "/track/" + encodeURIComponent(id)).then(okJson).then(function (d) {
+    if (!d || d.id == null) throw new Error("dzr: miss");
+    return d.readable !== false;
+  });
+}
 function parseTrackId(id) {
   var s = String(id || "");
   var m = s.match(/^([a-z]{2,4}):(.+)$/i);
@@ -341,12 +347,26 @@ function getTrackStreamUrl(trackId, quality, ctx) {
   var p = parseTrackId(id);
   var flow;
   if (p.type === "isrc") flow = ladder(chain, function (q) { return resolveIsrc(p.value, q); });
-  else if (p.type === "oct" || p.type === "dzr") flow = octStream(p.value, chain, flex);
+  else if (p.type === "oct" || p.type === "dzr") flow = deezerReadable(p.value).then(function (ok) {
+    if (!ok) return isrcFromDeezer(p.value).then(function (isrc) {
+      if (!ISRC_RE.test(isrc)) return Promise.reject(new Error("oct: not readable"));
+      return ladder(chain, function (q) { return resolveIsrc(isrc, q); });
+    });
+    return octStream(p.value, chain, flex);
+  });
   else if (p.type === "tdl") flow = ladder(chain, function (q) { return retryOnce(function () { return tdlStream(p.value, q); }); });
   else flow = octStream(p.value, chain, flex);
   return flow.then(function (r) {
     r.track = r.track || {};
     r.track.id = id;
+    r.streamType = r.streamType || "direct";
+    r.codec = r.codec || r.track.codec || null;
+    if (r.codec) r.codec = String(r.codec).toLowerCase();
+    r.mimeType = r.mimeType || r.track.mimeType || (r.codec ? "audio/" + String(r.codec).toLowerCase() : null);
+    r.audioQuality = r.audioQuality || r.track.audioQuality || null;
+    r.bitrate = r.bitrate || r.track.bitrate || null;
+    r.bitDepth = r.bitDepth || r.track.bitDepth || null;
+    r.sampleRate = r.sampleRate || r.track.sampleRate || null;
     return r;
   });
 }
