@@ -175,8 +175,8 @@ function exactMatchOrInverse(item, parts) {
 }
 function nameOf(a) { return typeof a === "string" ? a : ((a && a.name) || ""); }
 
-var TIDAL_API = "https://is-my-tidal-nigga.francescone.workers.dev";
-var TIDAL_SEARCH = "https://lol.samidy.workers.dev";
+var TIDAL_API = null;
+var TIDAL_SEARCH = null;
 var GEO_URL = "https://raw.githubusercontent.com/KissAnotherDay/Geolier2-8spine/main/Geolier_tidal.8spine";
 var GEO_TTL = 3600000;
 var geoP = null;
@@ -189,11 +189,9 @@ function loadTidalConfig() {
   }).then(function (txt) {
     var api = txt.match(/var TIDAL_API\s*=\s*"([^"]+)"/);
     var search = txt.match(/var TIDAL_SEARCH\s*=\s*"([^"]+)"/);
-    if (api && api[1]) TIDAL_API = api[1];
-    if (search && search[1]) TIDAL_SEARCH = search[1];
-  }, function (e) {
-    console.warn("geo cfg fail: " + e.message);
-  }).then(function () {
+    if (!(api && api[1]) || !(search && search[1])) throw new Error("geo: no tidal instance");
+    TIDAL_API = api[1];
+    TIDAL_SEARCH = search[1];
     geoAt = Date.now();
   });
   return geoP;
