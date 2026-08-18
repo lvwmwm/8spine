@@ -1,4 +1,16 @@
 {
+  "category:Parasy8": [
+    {
+      "id": "paras8-liver",
+      "name": "Parasy8",
+      "author": "Livie",
+      "version": "0.10.2",
+      "description": "Parasyte loader",
+      "labels": ["Parasy8", "loader"],
+      "download": "loader/loader.js",
+      "type": "MODULE"
+    }
+  ],
   "category:Liviely": [
     {
       "id": "liver",
