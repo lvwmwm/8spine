@@ -2939,9 +2939,8 @@
               if (isNaN(dur)) dur = -1;
               extra.push({ m3u: "#EXTINF:" + dur + "," + (t.artist + " - " + t.title) + "\n" + path });
             }
-            manifest.tracks.push(manifestEntry);
             if (onProgress) onProgress(idx + 1, tracks.length, t.title);
-            return { bytes: bytes, path: path, extra: extra, artist: t.artist, album: t.album };
+            return { bytes: bytes, path: path, extra: extra, artist: t.artist, album: t.album, index: idx, title: t.title, manifestEntry: manifestEntry };
           }).catch(function () {
             if (onProgress) onProgress(idx + 1, tracks.length, "error: " + t.filename);
             return null;
@@ -2961,18 +2960,13 @@
         var m3uExtra = [];
         var p = resolveAllCovers().then(function () {
           var next = 0;
+          var results = [];
           function worker() {
             if (next >= tracks.length) return Promise.resolve();
             var idx = next++;
             var t = tracks[idx];
             return buildTrack(t, idx).then(function (r) {
-              if (r) {
-                add(r.path, r.bytes);
-                r.extra.forEach(function (x) {
-                  if (x.m3u) m3uExtra.push(x.m3u);
-                  else add(x.path, x.bytes);
-                });
-              }
+              if (r) results[idx] = r;
               return worker();
             });
           }
@@ -2980,8 +2974,23 @@
           for (var w = 0; w < CONCURRENT && w < tracks.length; w++) {
             workers.push(worker());
           }
-          return Promise.all(workers);
-        }).then(function () {
+          return Promise.all(workers).then(function () { return results; });
+        }).then(function (results) {
+          results.sort(function (a, b) {
+            if (!a) return 1;
+            if (!b) return -1;
+            return a.index - b.index;
+          });
+          for (var ri = 0; ri < results.length; ri++) {
+            var r = results[ri];
+            if (!r) continue;
+            manifest.tracks.push(r.manifestEntry);
+            add(r.path, r.bytes);
+            r.extra.forEach(function (x) {
+              if (x.m3u) m3uExtra.push(x.m3u);
+              else add(x.path, x.bytes);
+            });
+          }
           m3uLines = m3uLines.concat(m3uExtra);
           var addedCovers = {};
           tracks.forEach(function (r) {
