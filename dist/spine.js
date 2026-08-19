@@ -2537,6 +2537,14 @@
   }
 
   
+  var MUSIC_EXTS = ["mp3", "mp2", "flac", "m4a", "m4b", "m4p", "aac", "ogg", "oga", "opus", "wav", "aiff", "aif", "wma", "alac", "ape", "flv"];
+
+  function isMusicName(name) {
+    var i = String(name || "").lastIndexOf(".");
+    if (i <= 0) return false;
+    return MUSIC_EXTS.indexOf(String(name).slice(i + 1).toLowerCase()) !== -1;
+  }
+
   function listDownloads(spine) {
     var fs = spine && spine.storage ? spine.storage.fs() : null;
     if (!fs) {
@@ -2558,6 +2566,7 @@
         var seen = {};
         function push(key, filename, source) {
           if (!filename || seen[filename]) return;
+          if (!isMusicName(filename)) return;
           seen[filename] = true;
           out.push({ key: key, filename: filename, uri: lib + filename, source: source });
         }
@@ -2592,7 +2601,7 @@
         var seen = {};
         (entries || []).forEach(function (en) {
           if (typeof en !== "string") return;
-          if (en.indexOf(".json") === en.length - 5) return;
+          if (!isMusicName(en)) return;
           if (en === "downloads.json.tmp" || en === "downloads.json.bak") return;
           if (en === "debrid_downloads.json.tmp" || en === "debrid_downloads.json.bak") return;
           if (seen[en]) return;
@@ -2729,11 +2738,10 @@
     metaFormat = metaFormat || "json";
     var fs = spine && spine.storage ? spine.storage.fs() : null;
     if (!fs) return Promise.reject(new Error("FileSystem not found"));
-    
-    
-    
-    return resolveBuffer().then(function (buffer) {
-      var entries = {};
+    return Promise.all([resolveBuffer(), resolveFflate()]).then(function (rs) {
+      var buffer = rs[0];
+      var ff = rs[1];
+      var canStream = !!(ff && typeof ff.Zip === "function" && typeof ff.ZipPassThrough === "function");
       var manifest = {
         app: "paras8 Export",
         exportedAt: new Date().toISOString(),
@@ -2742,9 +2750,6 @@
         tracks: []
       };
       var m3uLines = ["#EXTM3U"];
-      
-      
-      
       var coverMap = {};
       var coverKeys = [];
       tracks.forEach(function (t) {
@@ -2767,38 +2772,9 @@
       function coverFor(t) {
         return coverMap[(t.artist || "") + "\u0000" + (t.album || "")] || null;
       }
-      
-      
-      
-      
-      
-      
-      
-      
-      
-      
-      
-      var CONCURRENT = Math.min(8, tracks.length);
-      if (CONCURRENT < 1) CONCURRENT = 1;
-      var results = new Array(tracks.length);
-      var nextIdx = 0;
-      
-      var tPhase = { readMs: 0, decodeMs: 0, crcMs: 0, zipMs: 0, totalBytes: 0 };
-      function worker() {
-        if (nextIdx >= tracks.length) return Promise.resolve();
-        var idx = nextIdx++;
-        return processTrack(tracks[idx], idx).then(function () {
-          return worker();
-        });
-      }
-      function processTrack(t, idx) {
-        var t0 = Date.now();
+      function buildTrack(t, idx) {
         return fs.readAsStringAsync(t.uri, { encoding: "base64" }).then(function (b64) {
-            tPhase.readMs += Date.now() - t0;
-            var t1 = Date.now();
             var bytes = b64ToU8(b64, buffer);
-            tPhase.decodeMs += Date.now() - t1;
-            tPhase.totalBytes += bytes.length;
             var nn = ("0" + (idx + 1)).slice(-2);
             var folder = sanitize(t.artist) + "/" + sanitize(t.album) + "/";
             var path = folder + nn + " - " + sanitize(t.title) + "." + t.ext;
@@ -2851,59 +2827,116 @@
               if (isNaN(dur)) dur = -1;
               extra.push({ m3u: "#EXTINF:" + dur + "," + (t.artist + " - " + t.title) + "\n" + path });
             }
-            results[idx] = { bytes: bytes, path: path, manifestEntry: manifestEntry, extra: extra, artist: t.artist, album: t.album };
+            manifest.tracks.push(manifestEntry);
             if (onProgress) onProgress(idx + 1, tracks.length, t.title);
-            return null;
+            return { bytes: bytes, path: path, extra: extra, artist: t.artist, album: t.album };
           }).catch(function () {
             if (onProgress) onProgress(idx + 1, tracks.length, "error: " + t.filename);
             return null;
           });
       }
-      var workers = [];
-      
-      
-      
-      var runWorkers = resolveAllCovers().then(function () {
-        for (var w = 0; w < Math.min(CONCURRENT, tracks.length); w++) {
-          workers.push(worker());
-        }
-        return Promise.all(workers);
-      });
-      return runWorkers.then(function () {
-        var addedCovers = {};
-        results.forEach(function (r) {
-          if (!r) return;
-          entries[r.path] = r.bytes;
-          manifest.tracks.push(r.manifestEntry);
-          r.extra.forEach(function (x) {
-            if (x.m3u) m3uLines.push(x.m3u);
-            else entries[x.path] = x.bytes;
-          });
-          
-          
-          var cov = coverFor(r);
-          if (cov && r.path) {
-            var cfolder = r.path.slice(0, r.path.lastIndexOf("/") + 1);
-            if (cfolder && !addedCovers[cfolder]) {
-              addedCovers[cfolder] = true;
-              entries[cfolder + "cover.jpg"] = cov;
-            }
-          }
+      function streamZip() {
+        var chunks = [];
+        var zip = new ff.Zip(function (err, chunk, final) {
+          if (chunk && chunk.length) chunks.push(chunk);
         });
-        if (metaFormat === "m3u") {
-          entries["playlist.m3u"] = strToU8(m3uLines.join("\n"));
-        } else if (metaFormat !== "txt" && metaFormat !== "embedded") {
-          entries["manifest.json"] = strToU8(JSON.stringify(manifest, null, 2));
+        function add(path, data) {
+          var pt = new ff.ZipPassThrough(path);
+          zip.add(pt);
+          pt.push(data, true);
         }
-        
-        
-        var tz = Date.now();
-        var zip = zipStore(entries);
-        tPhase.zipMs = Date.now() - tz;
-        try {
-        } catch (e) {}
-        return { zip: zip, manifest: manifest, count: tracks.length, metaFormat: metaFormat };
-      });
+        var p = resolveAllCovers().then(function () {
+          var seq = Promise.resolve();
+          tracks.forEach(function (t, idx) {
+            seq = seq.then(function () {
+              return buildTrack(t, idx).then(function (r) {
+                if (!r) return null;
+                add(r.path, r.bytes);
+                r.extra.forEach(function (x) {
+                  if (x.m3u) m3uLines.push(x.m3u);
+                  else add(x.path, x.bytes);
+                });
+                return null;
+              });
+            });
+          });
+          return seq;
+        }).then(function () {
+          var addedCovers = {};
+          tracks.forEach(function (r) {
+            var cov = coverFor(r);
+            if (cov && r.artist && r.album) {
+              var folder = sanitize(r.artist) + "/" + sanitize(r.album) + "/";
+              if (folder && !addedCovers[folder]) {
+                addedCovers[folder] = true;
+                add(folder + "cover.jpg", cov);
+              }
+            }
+          });
+          if (metaFormat === "m3u") {
+            add("playlist.m3u", strToU8(m3uLines.join("\n")));
+          } else if (metaFormat !== "txt" && metaFormat !== "embedded") {
+            add("manifest.json", strToU8(JSON.stringify(manifest, null, 2)));
+          }
+          zip.end();
+          var total = 0;
+          for (var i = 0; i < chunks.length; i++) total += chunks[i].length;
+          var out = new Uint8Array(total);
+          var pos = 0;
+          for (var j = 0; j < chunks.length; j++) {
+            out.set(chunks[j], pos);
+            pos += chunks[j].length;
+          }
+          return { zip: out, manifest: manifest, count: tracks.length, metaFormat: metaFormat };
+        });
+        return p;
+      }
+      function storeZip() {
+        var entries = {};
+        var results = new Array(tracks.length);
+        var seq = Promise.resolve();
+        tracks.forEach(function (t, idx) {
+          seq = seq.then(function () {
+            return buildTrack(t, idx).then(function (r) {
+              if (r) results[idx] = r;
+              return null;
+            });
+          });
+        });
+        return resolveAllCovers().then(function () {
+          return seq;
+        }).then(function () {
+          var addedCovers = {};
+          results.forEach(function (r) {
+            if (!r) return;
+            entries[r.path] = r.bytes;
+            r.extra.forEach(function (x) {
+              if (x.m3u) m3uLines.push(x.m3u);
+              else entries[x.path] = x.bytes;
+            });
+            var cov = coverFor(r);
+            if (cov && r.path) {
+              var cfolder = r.path.slice(0, r.path.lastIndexOf("/") + 1);
+              if (cfolder && !addedCovers[cfolder]) {
+                addedCovers[cfolder] = true;
+                entries[cfolder + "cover.jpg"] = cov;
+              }
+            }
+          });
+          if (metaFormat === "m3u") {
+            entries["playlist.m3u"] = strToU8(m3uLines.join("\n"));
+          } else if (metaFormat !== "txt" && metaFormat !== "embedded") {
+            entries["manifest.json"] = strToU8(JSON.stringify(manifest, null, 2));
+          }
+          var tz = Date.now();
+          var zip = zipStore(entries);
+          try {
+          } catch (e) {}
+          return { zip: zip, manifest: manifest, count: tracks.length, metaFormat: metaFormat };
+        });
+      }
+      if (canStream) return streamZip();
+      return storeZip();
     });
   }
 
@@ -2917,7 +2950,7 @@
       var t0 = Date.now();
       var b64 = u8ToB64(zipBytes, buffer);
       var t1 = Date.now();
-      var doc = (fs.documentDirectory || "");
+      var doc = (fs.cacheDirectory || fs.documentDirectory || "");
       var dir = doc + "parasy8_export/";
       var name = "spine_music_" + Date.now() + ".zip";
       var mk = (typeof fs.makeDirectoryAsync === "function")
