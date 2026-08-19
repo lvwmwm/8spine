@@ -957,7 +957,7 @@ return {
   id: "paras8-liver",
   name: "paras8",
   author: "Livie",
-  version: "0.10.2",
+  version: "0.11.0",
   description: "paras8 loader",
   labels: ["loader"],
   automaticStreaming: false,
