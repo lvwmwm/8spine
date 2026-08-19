@@ -2947,9 +2947,11 @@
           });
       }
       function streamZip() {
-        var chunks = [];
+        var b64Parts = [];
         var zip = new ff.Zip(function (err, chunk, final) {
-          if (chunk && chunk.length) chunks.push(chunk);
+          if (chunk && chunk.length) {
+            b64Parts.push(u8ToB64(chunk, buffer));
+          }
         });
         function add(path, data) {
           var pt = new ff.ZipPassThrough(path);
@@ -3009,15 +3011,7 @@
             add("manifest.json", strToU8(JSON.stringify(manifest, null, 2)));
           }
           zip.end();
-          var total = 0;
-          for (var i = 0; i < chunks.length; i++) total += chunks[i].length;
-          var out = new Uint8Array(total);
-          var pos = 0;
-          for (var j = 0; j < chunks.length; j++) {
-            out.set(chunks[j], pos);
-            pos += chunks[j].length;
-          }
-          return { zip: out, manifest: manifest, count: tracks.length, metaFormat: metaFormat };
+          return { b64: b64Parts.join(""), manifest: manifest, count: tracks.length, metaFormat: metaFormat };
         });
         return p;
       }
@@ -3074,18 +3068,19 @@
   function writeZip(spine, zipBytes) {
     var fs = spine && spine.storage ? spine.storage.fs() : null;
     if (!fs) return Promise.reject(new Error("FileSystem not found"));
-    
-    
-    return resolveBuffer().then(function (buffer) {
-      var t0 = Date.now();
-      var b64 = u8ToB64(zipBytes, buffer);
-      var t1 = Date.now();
-      var doc = (fs.cacheDirectory || fs.documentDirectory || "");
-      var dir = doc + "parasy8_export/";
-      var name = "spine_music_" + Date.now() + ".zip";
-      var mk = (typeof fs.makeDirectoryAsync === "function")
-        ? fs.makeDirectoryAsync(dir, { intermediates: true, idempotent: true }).catch(function () {})
-        : Promise.resolve();
+    var isB64 = typeof zipBytes === "string";
+    var doc = (fs.cacheDirectory || fs.documentDirectory || "");
+    var dir = doc + "parasy8_export/";
+    var name = "spine_music_" + Date.now() + ".zip";
+    var mk = (typeof fs.makeDirectoryAsync === "function")
+      ? fs.makeDirectoryAsync(dir, { intermediates: true, idempotent: true }).catch(function () {})
+      : Promise.resolve();
+    var prepare = isB64
+      ? Promise.resolve(zipBytes)
+      : resolveBuffer().then(function (buffer) {
+          return u8ToB64(zipBytes, buffer);
+        });
+    return prepare.then(function (b64) {
       return mk.then(function () {
         return fs.writeAsStringAsync(dir + name, b64, { encoding: "base64" }).then(function () {
           try {
@@ -3105,7 +3100,8 @@
         return Promise.reject(new Error("No downloaded music found"));
       }
       return buildZip(spine, tracks, onProgress, metaFormat).then(function (res) {
-        return writeZip(spine, res.zip).then(function (w) {
+        var bytes = res.b64 != null ? res.b64 : res.zip;
+        return writeZip(spine, bytes).then(function (w) {
           return {
             uri: w.uri,
             name: w.name,
@@ -3113,7 +3109,8 @@
             tracks: tracks,
             manifest: res.manifest,
             metaFormat: metaFormat,
-            zip: res.zip
+            zip: res.zip || null,
+            b64: res.b64 || null
           };
         });
       });
