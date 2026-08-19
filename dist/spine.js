@@ -9,7 +9,7 @@
   }
 
   var SPINE = (g.SPINE = g.SPINE || {});
-  SPINE.version = "0.17.0";
+  SPINE.version = "0.17.1";
   SPINE.booted = false;
   SPINE.warmupEnabled = true;
   SPINE.app = { bundleTime: g.__BUNDLE_START_TIME__ || 0 };
@@ -3179,9 +3179,28 @@
       if (!tracks.length) {
         return Promise.reject(new Error("No downloaded music found"));
       }
-      return exportDirect(spine, tracks, onProgress).then(function (r) {
-        if (r && r.uri && r.uri.length) return r;
-        return Promise.reject(new Error("Direct copy failed for all tracks"));
+      return buildZip(spine, tracks, onProgress, metaFormat).then(function (bz) {
+        if (!bz) {
+          return Promise.reject(new Error("Zip build failed"));
+        }
+        var zipBytes = bz.zip || bz.b64;
+        if (!zipBytes) {
+          return Promise.reject(new Error("Zip build failed"));
+        }
+        return writeZip(spine, zipBytes).then(function (w) {
+          return {
+            mode: "zip",
+            uri: w.uri,
+            name: w.name,
+            count: tracks.length,
+            tracks: tracks,
+            manifest: bz.manifest,
+            metaFormat: bz.metaFormat,
+            zip: bz.zip,
+            b64: null,
+            exportDir: null
+          };
+        });
       });
     });
   }
