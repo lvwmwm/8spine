@@ -141,6 +141,44 @@
     });
   }
 
+  function makeRnShareFilter(m) {
+    var srcF = null;
+    try { srcF = m.bySourceSubstring("normalizeShareOpenOptions"); } catch (e) {}
+    return function (exps, meta) {
+      function good(x) {
+        if (!x || typeof x !== "object") return false;
+        return typeof x.open === "function" &&
+          typeof x.shareSingle === "function" &&
+          typeof x.isPackageInstalled === "function";
+      }
+      if (good(exps)) return true;
+      var d = null;
+      try { d = (exps && exps.__esModule && exps.default !== undefined) ? exps.default : null; } catch (e) {}
+      if (good(d)) return true;
+      if (srcF) {
+        try { if (srcF(exps, meta)) return true; } catch (e2) {}
+      }
+      return false;
+    };
+  }
+
+  function resolveRNShare() {
+    
+    
+    return memoResolve("rnshare", function () {
+      return findModuleAsyncMulti([
+        makeRnShareFilter,
+        function (m) { return m.bySourceSubstring("normalizeShareOpenOptions"); }
+      ], unwrapRnShare);
+    });
+  }
+
+  function unwrapRnShare(ex) {
+    if (ex && typeof ex.open === "function" && typeof ex.shareSingle === "function") return ex;
+    if (ex && ex.default && typeof ex.default.open === "function" && typeof ex.default.shareSingle === "function") return ex.default;
+    return null;
+  }
+
   function unwrapShare(ex) {
     if (ex && typeof ex.shareAsync === "function") return ex;
     if (ex && ex.default && typeof ex.default.shareAsync === "function") return ex.default;
@@ -1237,7 +1275,51 @@
     opts = opts || {};
     var isList = Array.isArray(uri);
     var uris = isList ? uri : [uri];
-    var mime = isList ? (opts.mimeType || "audio/*") : "application/zip";
+    if (isList) {
+      return shareList(spine, uris, opts);
+    }
+    return shareSingle(spine, uris[0], opts);
+  }
+
+  function shareList(spine, uris, opts) {
+    return resolveRNShare().then(function (rn) {
+      var after = { ok: false };
+      if (rn && typeof rn.open === "function") {
+        return Promise.resolve(rn.open({
+          urls: uris,
+          type: opts.mimeType || "audio/*",
+          title: opts.dialogTitle || "Export music",
+          failOnCancel: false
+        })).then(function (r) {
+          after.ok = !!(r && (r.success || r.dismissedAction));
+          after.reason = (!after.ok && r && r.message) ? String(r.message) : null;
+          return cleanupExport(spine, opts, after);
+        }).catch(function (e) {
+          after.ok = false;
+          after.reason = (e && e.message) || String(e);
+          return after;
+        });
+      }
+      return shareSingle(spine, uris[0], opts).then(function (r) {
+        after.ok = r.ok;
+        after.reason = r.reason;
+        return after;
+      });
+    });
+  }
+
+  function cleanupExport(spine, opts, after) {
+    if (opts.exportDir && spine && spine.storage) {
+      var cfs = spine.storage.fs();
+      if (cfs && typeof cfs.deleteAsync === "function") {
+        after.cleanup = cfs.deleteAsync(opts.exportDir, { idempotent: true }).catch(function () {});
+      }
+    }
+    return after;
+  }
+
+  function shareSingle(spine, uri, opts) {
+    opts = opts || {};
     return resolveSharing().then(function (sharing) {
       if (!sharing || typeof sharing.shareAsync !== "function") {
         return { ok: false, reason: "share-nao-disponivel" };
@@ -1247,20 +1329,12 @@
         : Promise.resolve(true);
       return Promise.resolve(avail).then(function (ok) {
         if (!ok) return { ok: false, reason: "share-indisponivel" };
-        var target = isList ? uris : uri;
-        return Promise.resolve(sharing.shareAsync(target, {
-          mimeType: mime,
+        return Promise.resolve(sharing.shareAsync(uri, {
+          mimeType: opts.mimeType || "application/zip",
           dialogTitle: opts.dialogTitle || "Export music",
-          UTI: isList ? "public.item" : "public.zip-archive"
+          UTI: opts.uti || "public.zip-archive"
         })).then(function () {
-          var after = { ok: true };
-          if (isList && opts.exportDir && spine && spine.storage) {
-            var cfs = spine.storage.fs();
-            if (cfs && typeof cfs.deleteAsync === "function") {
-              after.cleanup = cfs.deleteAsync(opts.exportDir, { idempotent: true }).catch(function () {});
-            }
-          }
-          return after;
+          return { ok: true };
         }).catch(function (e) {
           return { ok: false, reason: (e && e.message) || String(e) };
         });
@@ -1275,9 +1349,10 @@
   function warmup() {
     return Promise.all([
       resolveBuffer().catch(function () { return null; }),
-      resolveSharing().catch(function () { return null; })
+      resolveSharing().catch(function () { return null; }),
+      resolveRNShare().catch(function () { return null; })
     ]).then(function (r) {
-      return { buffer: !!r[0], sharing: !!r[1] };
+      return { buffer: !!r[0], sharing: !!r[1], rnshare: !!r[2] };
     });
   }
 
