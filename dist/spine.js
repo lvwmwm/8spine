@@ -3092,6 +3092,65 @@
   }
 
   
+  function estimateZipBytes(spine, tracks) {
+    var fs = spine && spine.storage ? spine.storage.fs() : null;
+    if (!fs || typeof fs.getInfoAsync !== "function") return Promise.resolve(-1);
+    return Promise.all(tracks.map(function (t) {
+      return fs.getInfoAsync(t.uri, {}).then(function (info) {
+        return (info && typeof info.size === "number") ? info.size : 0;
+      }).catch(function () { return 0; });
+    })).then(function (sizes) {
+      var sum = 0;
+      for (var i = 0; i < sizes.length; i++) sum += sizes[i];
+      return sum;
+    });
+  }
+
+  var EXPORT_ZIP_BYTE_LIMIT = 150 * 1024 * 1024;
+  var EXPORT_ZIP_COUNT_LIMIT = 20;
+
+  function exportDirect(spine, tracks, onProgress) {
+    var fs = spine && spine.storage ? spine.storage.fs() : null;
+    if (!fs) return Promise.reject(new Error("FileSystem not found"));
+    var doc = (fs.cacheDirectory || fs.documentDirectory || "");
+    var dir = doc + "parasy8_export/";
+    var uris = [];
+    var seq = Promise.resolve();
+    tracks.forEach(function (t, idx) {
+      seq = seq.then(function () {
+        var nn = ("0" + (idx + 1)).slice(-2);
+        var folder = sanitize(t.artist) + "/" + sanitize(t.album) + "/";
+        var dest = dir + folder + nn + " - " + sanitize(t.title) + "." + t.ext;
+        var mk = (typeof fs.makeDirectoryAsync === "function")
+          ? fs.makeDirectoryAsync(dir + folder, { intermediates: true, idempotent: true }).catch(function () {})
+          : Promise.resolve();
+        return mk.then(function () {
+          if (typeof fs.copyAsync !== "function") return null;
+          return fs.copyAsync(t.uri, dest).then(function () {
+            uris.push(dest);
+            if (onProgress) onProgress(idx + 1, tracks.length, t.title);
+            return null;
+          }).catch(function () { return null; });
+        });
+      });
+    });
+    return seq.then(function () {
+      if (!uris.length) return null;
+      return {
+        mode: "direct",
+        uri: uris,
+        name: null,
+        count: uris.length,
+        tracks: tracks,
+        manifest: null,
+        metaFormat: null,
+        zip: null,
+        b64: null,
+        exportDir: dir
+      };
+    });
+  }
+
   function exportMusic(spine, onProgress, opts) {
     opts = opts || {};
     var metaFormat = opts.metaFormat || "json";
@@ -3099,19 +3158,47 @@
       if (!tracks.length) {
         return Promise.reject(new Error("No downloaded music found"));
       }
-      return buildZip(spine, tracks, onProgress, metaFormat).then(function (res) {
-        var bytes = res.b64 != null ? res.b64 : res.zip;
-        return writeZip(spine, bytes).then(function (w) {
-          return {
-            uri: w.uri,
-            name: w.name,
-            count: res.count,
-            tracks: tracks,
-            manifest: res.manifest,
-            metaFormat: metaFormat,
-            zip: res.zip || null,
-            b64: res.b64 || null
-          };
+      return estimateZipBytes(spine, tracks).then(function (total) {
+        var useDirect = tracks.length > EXPORT_ZIP_COUNT_LIMIT ||
+          (total >= 0 && total > EXPORT_ZIP_BYTE_LIMIT);
+        if (useDirect) {
+          return exportDirect(spine, tracks, onProgress).then(function (r) {
+            if (r) return r;
+            return buildZip(spine, tracks, onProgress, metaFormat).then(function (res) {
+              var bytes = res.b64 != null ? res.b64 : res.zip;
+              return writeZip(spine, bytes).then(function (w) {
+                return {
+                  mode: "zip",
+                  uri: w.uri,
+                  name: w.name,
+                  count: res.count,
+                  tracks: tracks,
+                  manifest: res.manifest,
+                  metaFormat: metaFormat,
+                  zip: res.zip || null,
+                  b64: res.b64 || null,
+                  exportDir: null
+                };
+              });
+            });
+          });
+        }
+        return buildZip(spine, tracks, onProgress, metaFormat).then(function (res) {
+          var bytes = res.b64 != null ? res.b64 : res.zip;
+          return writeZip(spine, bytes).then(function (w) {
+            return {
+              mode: "zip",
+              uri: w.uri,
+              name: w.name,
+              count: res.count,
+              tracks: tracks,
+              manifest: res.manifest,
+              metaFormat: metaFormat,
+              zip: res.zip || null,
+              b64: res.b64 || null,
+              exportDir: null
+            };
+          });
         });
       });
     });
@@ -3119,10 +3206,11 @@
 
   
   
-  function shareZip(spine, uri) {
-    
-    
-    
+  function shareZip(spine, uri, opts) {
+    opts = opts || {};
+    var isList = Array.isArray(uri);
+    var uris = isList ? uri : [uri];
+    var mime = isList ? (opts.mimeType || "audio/*") : "application/zip";
     return resolveSharing().then(function (sharing) {
       if (!sharing || typeof sharing.shareAsync !== "function") {
         return { ok: false, reason: "share-nao-disponivel" };
@@ -3132,12 +3220,20 @@
         : Promise.resolve(true);
       return Promise.resolve(avail).then(function (ok) {
         if (!ok) return { ok: false, reason: "share-indisponivel" };
-        return Promise.resolve(sharing.shareAsync(uri, {
-          mimeType: "application/zip",
-          dialogTitle: "Export music",
-          UTI: "public.zip-archive"
+        var target = isList ? uris : uri;
+        return Promise.resolve(sharing.shareAsync(target, {
+          mimeType: mime,
+          dialogTitle: opts.dialogTitle || "Export music",
+          UTI: isList ? "public.item" : "public.zip-archive"
         })).then(function () {
-          return { ok: true };
+          var after = { ok: true };
+          if (isList && opts.exportDir && spine && spine.storage) {
+            var cfs = spine.storage.fs();
+            if (cfs && typeof cfs.deleteAsync === "function") {
+              after.cleanup = cfs.deleteAsync(opts.exportDir, { idempotent: true }).catch(function () {});
+            }
+          }
+          return after;
         }).catch(function (e) {
           return { ok: false, reason: (e && e.message) || String(e) };
         });
@@ -3733,11 +3829,12 @@
           setFeedback("");
           try {
             if (spine.exporter && typeof spine.exporter.shareZip === "function") {
-              spine.exporter.shareZip(spine, res.uri).then(function (sh) {
+              spine.exporter.shareZip(spine, res.uri, { exportDir: res.exportDir }).then(function (sh) {
                 if (sh && sh.ok) {
                   ui.Alert("Export music", res.count + " track(s) ready. Use the share sheet to save to Files/apps.", [{ text: "OK" }]);
                 } else {
-                  ui.Alert("Export music", "ZIP criado: " + res.uri + (sh && sh.reason ? " (share: " + sh.reason + ")" : ""), [{ text: "OK" }]);
+                  var where = Array.isArray(res.uri) ? res.uri.join(" , ") : res.uri;
+                  ui.Alert("Export music", (Array.isArray(res.uri) ? "Arquivos prontos: " : "ZIP criado: ") + where + (sh && sh.reason ? " (share: " + sh.reason + ")" : ""), [{ text: "OK" }]);
                 }
               }, function () {});
             }

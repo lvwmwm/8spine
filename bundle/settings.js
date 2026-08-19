@@ -558,11 +558,12 @@
           setFeedback("");
           try {
             if (spine.exporter && typeof spine.exporter.shareZip === "function") {
-              spine.exporter.shareZip(spine, res.uri).then(function (sh) {
+              spine.exporter.shareZip(spine, res.uri, { exportDir: res.exportDir }).then(function (sh) {
                 if (sh && sh.ok) {
                   ui.Alert("Export music", res.count + " track(s) ready. Use the share sheet to save to Files/apps.", [{ text: "OK" }]);
                 } else {
-                  ui.Alert("Export music", "ZIP criado: " + res.uri + (sh && sh.reason ? " (share: " + sh.reason + ")" : ""), [{ text: "OK" }]);
+                  var where = Array.isArray(res.uri) ? res.uri.join(" , ") : res.uri;
+                  ui.Alert("Export music", (Array.isArray(res.uri) ? "Arquivos prontos: " : "ZIP criado: ") + where + (sh && sh.reason ? " (share: " + sh.reason + ")" : ""), [{ text: "OK" }]);
                 }
               }, function () {});
             }
