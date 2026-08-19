@@ -9,7 +9,7 @@
   }
 
   var SPINE = (g.SPINE = g.SPINE || {});
-  SPINE.version = "0.15.0";
+  SPINE.version = "0.16.0";
   SPINE.booted = false;
   SPINE.warmupEnabled = true;
   SPINE.app = { bundleTime: g.__BUNDLE_START_TIME__ || 0 };
@@ -3092,23 +3092,6 @@
   }
 
   
-  function estimateZipBytes(spine, tracks) {
-    var fs = spine && spine.storage ? spine.storage.fs() : null;
-    if (!fs || typeof fs.getInfoAsync !== "function") return Promise.resolve(-1);
-    return Promise.all(tracks.map(function (t) {
-      return fs.getInfoAsync(t.uri, {}).then(function (info) {
-        return (info && typeof info.size === "number") ? info.size : 0;
-      }).catch(function () { return 0; });
-    })).then(function (sizes) {
-      var sum = 0;
-      for (var i = 0; i < sizes.length; i++) sum += sizes[i];
-      return sum;
-    });
-  }
-
-  var EXPORT_ZIP_BYTE_LIMIT = 150 * 1024 * 1024;
-  var EXPORT_ZIP_COUNT_LIMIT = 20;
-
   function exportDirect(spine, tracks, onProgress) {
     var fs = spine && spine.storage ? spine.storage.fs() : null;
     if (!fs) return Promise.reject(new Error("FileSystem not found"));
@@ -3126,7 +3109,7 @@
           : Promise.resolve();
         return mk.then(function () {
           if (typeof fs.copyAsync !== "function") return null;
-          return fs.copyAsync(t.uri, dest).then(function () {
+          return fs.copyAsync({ from: t.uri, to: dest }).then(function () {
             uris.push(dest);
             if (onProgress) onProgress(idx + 1, tracks.length, t.title);
             return null;
@@ -3158,48 +3141,9 @@
       if (!tracks.length) {
         return Promise.reject(new Error("No downloaded music found"));
       }
-      return estimateZipBytes(spine, tracks).then(function (total) {
-        var useDirect = tracks.length > EXPORT_ZIP_COUNT_LIMIT ||
-          (total >= 0 && total > EXPORT_ZIP_BYTE_LIMIT);
-        if (useDirect) {
-          return exportDirect(spine, tracks, onProgress).then(function (r) {
-            if (r) return r;
-            return buildZip(spine, tracks, onProgress, metaFormat).then(function (res) {
-              var bytes = res.b64 != null ? res.b64 : res.zip;
-              return writeZip(spine, bytes).then(function (w) {
-                return {
-                  mode: "zip",
-                  uri: w.uri,
-                  name: w.name,
-                  count: res.count,
-                  tracks: tracks,
-                  manifest: res.manifest,
-                  metaFormat: metaFormat,
-                  zip: res.zip || null,
-                  b64: res.b64 || null,
-                  exportDir: null
-                };
-              });
-            });
-          });
-        }
-        return buildZip(spine, tracks, onProgress, metaFormat).then(function (res) {
-          var bytes = res.b64 != null ? res.b64 : res.zip;
-          return writeZip(spine, bytes).then(function (w) {
-            return {
-              mode: "zip",
-              uri: w.uri,
-              name: w.name,
-              count: res.count,
-              tracks: tracks,
-              manifest: res.manifest,
-              metaFormat: metaFormat,
-              zip: res.zip || null,
-              b64: res.b64 || null,
-              exportDir: null
-            };
-          });
-        });
+      return exportDirect(spine, tracks, onProgress).then(function (r) {
+        if (r && r.uri && r.uri.length) return r;
+        return Promise.reject(new Error("Direct copy failed for all tracks"));
       });
     });
   }
@@ -3803,7 +3747,7 @@
         if (setBusy) {
           try { setBusy(true); } catch (e) {}
         }
-        setFeedback("Preparing ZIP...");
+        setFeedback("Preparing files...");
         var p = null;
         try {
           if (spine.exporter && typeof spine.exporter.exportMusic === "function") {
@@ -3834,7 +3778,7 @@
                   ui.Alert("Export music", res.count + " track(s) ready. Use the share sheet to save to Files/apps.", [{ text: "OK" }]);
                 } else {
                   var where = Array.isArray(res.uri) ? res.uri.join(" , ") : res.uri;
-                  ui.Alert("Export music", (Array.isArray(res.uri) ? "Arquivos prontos: " : "ZIP criado: ") + where + (sh && sh.reason ? " (share: " + sh.reason + ")" : ""), [{ text: "OK" }]);
+                  ui.Alert("Export music", (Array.isArray(res.uri) ? "Arquivos prontos: " : "Arquivo criado: ") + where + (sh && sh.reason ? " (share: " + sh.reason + ")" : ""), [{ text: "OK" }]);
                 }
               }, function () {});
             }
