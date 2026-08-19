@@ -3431,6 +3431,7 @@
           st.wipe()
         ];
         return Promise.all(work).then(function (r) {
+          resetSpineRuntime();
           var exit = closeApp();
           try {
           } catch (e) {}
@@ -3441,6 +3442,23 @@
       } catch (e) {
         return Promise.resolve({ done: false, exit: false });
       }
+    }
+
+    function resetSpineRuntime() {
+      try {
+        try { g.SPINE.booted = false; } catch (e) {}
+        try { g.__SPINE_EXEC_TS__ = 0; } catch (e) {}
+        try {
+          var pre = g.__SPINE_PRE__;
+          if (pre && pre.settings) {
+            var stReset = pre.settings;
+            stReset.Orig = null;
+            stReset.Wrapped = null;
+            stReset.OrigProxy = false;
+            stReset.lastFail = "unpatch";
+          }
+        } catch (e2) {}
+      } catch (e3) {}
     }
 
     

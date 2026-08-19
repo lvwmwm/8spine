@@ -959,7 +959,17 @@ function runBundle() {
   }
   return shouldRun().then(function (run) {
     if (!run) return done(0);
-    if (g.SPINE && g.SPINE.booted) return done(0);
+    var stNow = null;
+    try {
+      var preNow = g.__SPINE_PRE__;
+      stNow = (preNow && preNow.settings) || null;
+    } catch (e) {}
+    var settingsActive = !!(stNow && (stNow.Orig || stNow.Wrapped));
+    if (g.SPINE && g.SPINE.booted && settingsActive) return done(0);
+    if (g.SPINE && g.SPINE.booted && !settingsActive) {
+      try { g.SPINE.booted = false; } catch (e) {}
+      try { g.__SPINE_EXEC_TS__ = 0; } catch (e) {}
+    }
     if (g.__SPINE_EXEC_TS__ && (Date.now() - g.__SPINE_EXEC_TS__) < 10000) return done(0);
     try {
       scanRuntime();
@@ -1106,7 +1116,7 @@ return {
   id: "paras8-liver",
   name: "paras8",
   author: "Livie",
-  version: "0.12.0",
+  version: "0.12.1",
   description: "paras8 loader",
   labels: ["loader"],
   automaticStreaming: false,
