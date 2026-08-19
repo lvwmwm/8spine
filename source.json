@@ -4,7 +4,7 @@
       "id": "paras8-liver",
       "name": "Parasy8",
       "author": "Livie",
-      "version": "0.12.1",
+      "version": "0.12.2",
       "description": "Parasyte loader",
       "labels": ["Parasy8", "loader"],
       "download": "loader/loader.js",

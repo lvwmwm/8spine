@@ -1,5 +1,6 @@
 ﻿
 var GITHUB_RAW = "https://raw.githubusercontent.com/lvwmwm/8spine/main";
+var GITHUB_BASE = "https://raw.githubusercontent.com/lvwmwm/8spine";
 var GITHUB_API = "https://api.github.com/repos/lvwmwm/8spine";
 var BUNDLE_PATH = GITHUB_RAW + "/dist/spine.js";
 var SILENCE_PATH = GITHUB_RAW + "/silence.wav";
@@ -866,7 +867,7 @@ function fetchSha() {
 }
 
 function fetchRaw(sha) {
-  var url = GITHUB_RAW + "/" + sha + "/dist/spine.js";
+  var url = GITHUB_BASE + "/" + sha + "/dist/spine.js";
   var ctl = null;
   var timer = null;
   try {
@@ -1116,7 +1117,7 @@ return {
   id: "paras8-liver",
   name: "paras8",
   author: "Livie",
-  version: "0.12.1",
+  version: "0.12.2",
   description: "paras8 loader",
   labels: ["loader"],
   automaticStreaming: false,
