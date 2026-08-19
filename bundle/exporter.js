@@ -1262,27 +1262,44 @@
       if (!tracks.length) {
         return Promise.reject(new Error("No downloaded music found"));
       }
-      return buildZip(spine, tracks, onProgress, metaFormat).then(function (bz) {
-        if (!bz) {
-          return Promise.reject(new Error("Zip build failed"));
+      // v0.17.2: exportDirect primeiro (copyAsync nativo, rapido) — os
+      // arquivos ficam no cache na estrutura organizada (Artista/Album/NN);
+      // depois o zip e montado A PARTIR desses arquivos do cache, mantendo
+      // a mesma arvore de pastas dentro do zip.
+      return exportDirect(spine, tracks, onProgress).then(function (dr) {
+        if (!dr || !dr.uri || !dr.uri.length) {
+          return Promise.reject(new Error("Direct copy failed for all tracks"));
         }
-        var zipBytes = bz.zip || bz.b64;
-        if (!zipBytes) {
-          return Promise.reject(new Error("Zip build failed"));
-        }
-        return writeZip(spine, zipBytes).then(function (w) {
-          return {
-            mode: "zip",
-            uri: w.uri,
-            name: w.name,
-            count: tracks.length,
-            tracks: tracks,
-            manifest: bz.manifest,
-            metaFormat: bz.metaFormat,
-            zip: bz.zip,
-            b64: null,
-            exportDir: null
-          };
+        var cacheTracks = tracks.map(function (t, i) {
+          var c = {};
+          for (var k in t) {
+            if (Object.prototype.hasOwnProperty.call(t, k)) c[k] = t[k];
+          }
+          c.uri = dr.uri[i];
+          return c;
+        });
+        return buildZip(spine, cacheTracks, onProgress, metaFormat).then(function (bz) {
+          if (!bz) {
+            return Promise.reject(new Error("Zip build failed"));
+          }
+          var zipBytes = bz.zip || bz.b64;
+          if (!zipBytes) {
+            return Promise.reject(new Error("Zip build failed"));
+          }
+          return writeZip(spine, zipBytes).then(function (w) {
+            return {
+              mode: "zip",
+              uri: w.uri,
+              name: w.name,
+              count: tracks.length,
+              tracks: tracks,
+              manifest: bz.manifest,
+              metaFormat: bz.metaFormat,
+              zip: bz.zip,
+              b64: null,
+              exportDir: dr.exportDir
+            };
+          });
         });
       });
     });
