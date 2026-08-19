@@ -1,5 +1,6 @@
 ﻿
 var GITHUB_RAW = "https://raw.githubusercontent.com/lvwmwm/8spine/main";
+var GITHUB_API = "https://api.github.com/repos/lvwmwm/8spine";
 var BUNDLE_PATH = GITHUB_RAW + "/dist/spine.js";
 var SILENCE_PATH = GITHUB_RAW + "/silence.wav";
 
@@ -743,14 +744,14 @@ function readStored() {
   });
 }
 
-function saveStoredFS(code) {
+function saveStoredFS(code, sha) {
   var fs = findFS();
   var dir = fsDir();
   if (!fs || !dir) {
     return Promise.resolve(false);
   }
   var file = dir + FS_BUNDLE_FILE;
-  var meta = JSON.stringify({ at: Date.now(), len: code.length, via: "fs" });
+  var meta = JSON.stringify({ at: Date.now(), len: code.length, via: "fs", sha: sha || null });
   var ensure = null;
   try {
     ensure = fs.getInfoAsync(dir).then(function (info) {
@@ -777,8 +778,8 @@ function saveStoredFS(code) {
   });
 }
 
-function saveStored(code) {
-  return saveStoredFS(code).then(function (fsOk) {
+function saveStored(code, sha) {
+  return saveStoredFS(code, sha).then(function (fsOk) {
     if (fsOk) {
       return true;
     }
@@ -786,7 +787,7 @@ function saveStored(code) {
     if (!s || typeof s.setItem !== "function") {
       return false;
     }
-    var meta = JSON.stringify({ at: Date.now(), len: code.length });
+    var meta = JSON.stringify({ at: Date.now(), len: code.length, sha: sha || null });
     return Promise.all([
       s.setItem(BUNDLE_KEY, code).catch(function () { return false; }),
       s.setItem(BUNDLE_META_KEY, meta).catch(function () { return false; })
@@ -794,6 +795,103 @@ function saveStored(code) {
       return !!(r[0]);
     });
   });
+}
+
+function readStoredSha() {
+  var fs = findFS();
+  var dir = fsDir();
+  if (fs && dir) {
+    var mfile = dir + FS_META_FILE;
+    try {
+      return fs.readAsStringAsync(mfile).then(function (m) {
+        try {
+          var j = m ? JSON.parse(m) : {};
+          return j.sha || null;
+        } catch (e) { return null; }
+      }).catch(function () { return null; });
+    } catch (e) { }
+  }
+  var s = findStore();
+  if (!s || typeof s.getItem !== "function") {
+    return Promise.resolve(null);
+  }
+  try {
+    return s.getItem(BUNDLE_META_KEY).then(function (m) {
+      try {
+        var j2 = m ? JSON.parse(m) : {};
+        return j2.sha || null;
+      } catch (e) { return null; }
+    }).catch(function () { return null; });
+  } catch (e) {
+    return Promise.resolve(null);
+  }
+}
+
+function fetchSha() {
+  var memo = G().__SPINE_SHA_MEMO__;
+  var now = Date.now();
+  if (memo && memo.sha && (now - memo.at) < 300000) {
+    return Promise.resolve(memo.sha);
+  }
+  var url = GITHUB_API + "/commits/main?ts=" + now;
+  var ctl = null;
+  var timer = null;
+  try {
+    if (typeof AbortController !== "undefined") {
+      ctl = new AbortController();
+      timer = setTimeout(function () { try { ctl.abort(); } catch (e) {} }, 8000);
+    }
+  } catch (e) {}
+  var opts = { headers: { Accept: "application/vnd.github+json" } };
+  if (ctl) {
+    opts.signal = ctl.signal;
+  }
+  return G().fetch(url, opts)
+    .then(function (r) {
+      try { clearTimeout(timer); } catch (e) {}
+      if (!r || !r.ok) throw new Error("HTTP " + (r && r.status));
+      return r.json();
+    })
+    .then(function (j) {
+      var sha = j && j.sha ? j.sha : null;
+      if (sha) {
+        try { G().__SPINE_SHA_MEMO__ = { sha: sha, at: Date.now() }; } catch (e) {}
+      }
+      return sha;
+    })
+    .catch(function (err) {
+      try { clearTimeout(timer); } catch (e) {}
+      throw err;
+    });
+}
+
+function fetchRaw(sha) {
+  var url = GITHUB_RAW + "/" + sha + "/dist/spine.js";
+  var ctl = null;
+  var timer = null;
+  try {
+    if (typeof AbortController !== "undefined") {
+      ctl = new AbortController();
+      timer = setTimeout(function () { try { ctl.abort(); } catch (e) {} }, 15000);
+    }
+  } catch (e) {}
+  var opts = { headers: { Accept: "application/javascript" } };
+  if (ctl) {
+    opts.signal = ctl.signal;
+  }
+  return G().fetch(url, opts)
+    .then(function (r) {
+      try { clearTimeout(timer); } catch (e) {}
+      if (!r || !r.ok) throw new Error("HTTP " + (r && r.status));
+      return r.text();
+    })
+    .then(function (code) {
+      return { code: code, base: GITHUB_RAW, sha: sha };
+    })
+    .catch(function (err) {
+      try { clearTimeout(timer); } catch (e) {}
+      throw err;
+    });
 }
 
 function fetchLatest() {
@@ -868,35 +966,86 @@ function runBundle() {
       if (!runtimeMemo.store) runtimeMemo.store = findStore();
       if (!runtimeMemo.fs) runtimeMemo.fs = findFS();
     } catch (e) {}
-    return fetchLatest().then(function (fresh) {
-      if (fresh && fresh.code) {
-        return execFresh(fresh).then(done);
+    return fetchSha().then(function (sha) {
+      if (!sha) {
+        return legacyFetchFlow().then(done);
       }
-      return readStored().then(function (stored) {
-        if (stored && stored.code) {
-          var okStored = exec(stored.code);
-          if (okStored) {
-            return done(stored.code.length);
+      return readStoredSha().then(function (storedSha) {
+        if (storedSha && storedSha === sha) {
+          return readStored().then(function (stored) {
+            if (stored && stored.code) {
+              var okSame = exec(stored.code);
+              if (okSame) {
+                return done(stored.code.length);
+              }
+            }
+            return legacyFetchFlow().then(done);
+          });
+        }
+        return fetchRaw(sha).then(function (fresh) {
+          if (fresh && fresh.code) {
+            var ok = exec(fresh.code);
+            if (ok) {
+              return saveStored(fresh.code, sha).then(function () { return done(fresh.code.length); });
+            }
+            return readStored().then(function (stored) {
+              if (stored && stored.code) {
+                var okStored = exec(stored.code);
+                if (okStored) {
+                  return done(stored.code.length);
+                }
+              }
+              return done(0);
+            });
           }
           return done(0);
-        }
-        return done(0);
+        }).catch(function (err) {
+          return readStored().then(function (stored) {
+            if (stored && stored.code) {
+              var okStored2 = exec(stored.code);
+              if (okStored2) {
+                return done(stored.code.length);
+              }
+            }
+            return done(0);
+          });
+        });
       });
     }).catch(function (err) {
-      return readStored().then(function (stored) {
-        if (stored && stored.code) {
-          var okStored = exec(stored.code);
-          if (okStored) {
-            return done(stored.code.length);
-          }
-          return done(0);
-        }
-        return done(0);
-      });
+      return legacyFetchFlow().then(done);
     });
   }).catch(function (err) {
     warn(err);
     return done(0);
+  });
+}
+
+function legacyFetchFlow() {
+  return fetchLatest().then(function (fresh) {
+    if (fresh && fresh.code) {
+      return execFresh(fresh);
+    }
+    return readStored().then(function (stored) {
+      if (stored && stored.code) {
+        var okStored = exec(stored.code);
+        if (okStored) {
+          return stored.code.length;
+        }
+        return 0;
+      }
+      return 0;
+    });
+  }).catch(function (err) {
+    return readStored().then(function (stored) {
+      if (stored && stored.code) {
+        var okStored = exec(stored.code);
+        if (okStored) {
+          return stored.code.length;
+        }
+        return 0;
+      }
+      return 0;
+    });
   });
 }
 
@@ -957,7 +1106,7 @@ return {
   id: "paras8-liver",
   name: "paras8",
   author: "Livie",
-  version: "0.11.0",
+  version: "0.12.0",
   description: "paras8 loader",
   labels: ["loader"],
   automaticStreaming: false,
