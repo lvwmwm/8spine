@@ -577,6 +577,108 @@
     return { title: parts[0] || "", artist: parts[1] || "", album: parts[2] || "", duration: parts[3] || "" };
   }
 
+  function resolveArtistName(track) {
+    if (!track) return "";
+    var a = track.artist;
+    if (a == null) return "";
+    if (typeof a === "string") return a;
+    if (Array.isArray(a)) {
+      var names = [];
+      for (var i = 0; i < a.length; i++) {
+        var n = (typeof a[i] === "string") ? a[i] : (a[i] && a[i].name);
+        if (n) names.push(n);
+      }
+      return names.join(", ");
+    }
+    return a.name || a.artistName || a.artist || "";
+  }
+
+  function resolveAlbumTitle(track) {
+    if (!track) return "";
+    var al = track.album;
+    if (al == null) return "";
+    if (typeof al === "string") return al;
+    return al.title || al.name || al.album || al.albumTitle || al.collectionName || "";
+  }
+
+  function resolveTrackTitle(track) {
+    if (!track) return "";
+    return track.title || track.name || track.trackName || "";
+  }
+
+  function resolveTrackDuration(track) {
+    if (!track) return "";
+    var d = track.duration_ms;
+    if (d == null) d = track.duration;
+    return d == null ? "" : String(d);
+  }
+
+  
+  function getUniqueTrackKey(item) {
+    if (!item) return "";
+    if (typeof item === "string") return item;
+    var artist = resolveArtistName(item);
+    var album = resolveAlbumTitle(item);
+    var items = [item.name || ""];
+    items.push(artist);
+    if (album) items.push(album);
+    if (item.duration_ms || item.duration || "") items.push(resolveTrackDuration(item));
+    return items.join("|").toLowerCase().trim();
+  }
+
+  
+  function indexTracks(trackList) {
+    var byUnique = {};
+    var byId = {};
+    var byName = {};
+    var byFilename = {};
+    var byDebridKey = {};
+    if (!Array.isArray(trackList)) trackList = [];
+    for (var i = 0; i < trackList.length; i++) {
+      var t = trackList[i];
+      if (!t || typeof t !== "object") continue;
+      var meta = {
+        id: t.id,
+        name: t.name,
+        title: resolveTrackTitle(t),
+        artist: resolveArtistName(t),
+        album: resolveAlbumTitle(t),
+        duration: resolveTrackDuration(t),
+        downloadedUri: t.downloadedUri,
+        uri: t.uri || t.url
+      };
+      var uk = getUniqueTrackKey(t);
+      if (uk && !(uk in byUnique)) byUnique[uk] = meta;
+      if (t.id && !(t.id in byId)) byId[t.id] = meta;
+      if (t.name && !(t.name in byName)) byName[t.name] = meta;
+      var fns = [t.downloadedUri, t.uri, t.url];
+      for (var f = 0; f < fns.length; f++) {
+        var fn = String(fns[f] || "");
+        var base = fn.split("/").pop();
+        if (base && base.indexOf(".") !== -1 && !(base in byFilename)) byFilename[base] = meta;
+      }
+      var idMatch = String(t.id || "").match(/^(torbox|realdebrid):([^:]+):([^:]+):/);
+      if (idMatch) {
+        var dk = idMatch[2] + "_" + idMatch[3];
+        if (!(dk in byDebridKey)) byDebridKey[dk] = meta;
+      }
+    }
+    return { byUnique: byUnique, byId: byId, byName: byName, byFilename: byFilename, byDebridKey: byDebridKey };
+  }
+
+  function lookupTrackMeta(index, key, filename) {
+    if (!index) return null;
+    var s = String(key || "");
+    var m = null;
+    if (s) {
+      m = index.byUnique[s.toLowerCase().trim()] || index.byId[s] || index.byName[s] || index.byDebridKey[s] || null;
+    }
+    if (!m && filename) {
+      m = index.byFilename[String(filename).split("/").pop()] || null;
+    }
+    return m;
+  }
+
   function sanitize(seg) {
     return String(seg || "Unknown")
       .replace(/[\/\\:*?"<>|]/g, "")
@@ -642,16 +744,25 @@
     function fromRecords() {
       return Promise.all([
         readJson(fs, lib + "downloads.json"),
-        readJson(fs, lib + "debrid_downloads.json")
+        readJson(fs, lib + "debrid_downloads.json"),
+        readJson(fs, lib + "tracks.json")
       ]).then(function (rs) {
-        var dl = rs[0], dd = rs[1];
+        var dl = rs[0], dd = rs[1], tracks = rs[2];
+        var idx = indexTracks(Array.isArray(tracks) ? tracks : []);
         var out = [];
         var seen = {};
         function push(key, filename, source) {
           if (!filename || seen[filename]) return;
           if (!isMusicName(filename)) return;
           seen[filename] = true;
-          out.push({ key: key, filename: filename, uri: lib + filename, source: source });
+          var m = lookupTrackMeta(idx, key, filename);
+          out.push({
+            key: key,
+            filename: filename,
+            uri: lib + filename,
+            source: source,
+            meta: m || null
+          });
         }
         if (dl && dl.downloadedTracks && dl.recentDownloads) {
           var keys = Array.isArray(dl.downloadedTracks) ? dl.downloadedTracks.slice() : [];
@@ -702,17 +813,18 @@
     }).then(function (out) {
       return out.map(function (t) {
         var p = parseFilename(t.filename);
-        var meta = parseKeyMeta(t.key);
+        var trackMeta = t.meta || null;
+        var keyMeta = parseKeyMeta(t.key);
         return {
           key: t.key,
           filename: t.filename,
           uri: t.uri,
           source: t.source,
-          artist: p.artist || meta.artist || "Unknown",
-          title: p.title || meta.title || t.filename,
-          album: meta.album || "Unknown Album",
+          artist: (trackMeta && trackMeta.artist) || p.artist || keyMeta.artist || "Unknown",
+          title: (trackMeta && trackMeta.title) || p.title || keyMeta.title || t.filename,
+          album: (trackMeta && trackMeta.album) || keyMeta.album || "Unknown Album",
           ext: p.ext || "mp3",
-          duration: meta.duration || ""
+          duration: (trackMeta && trackMeta.duration) || keyMeta.duration || ""
         };
       });
     });
@@ -928,23 +1040,32 @@
           zip.add(pt);
           pt.push(data, true);
         }
+        var CONCURRENT = 4;
+        var m3uExtra = [];
         var p = resolveAllCovers().then(function () {
-          var seq = Promise.resolve();
-          tracks.forEach(function (t, idx) {
-            seq = seq.then(function () {
-              return buildTrack(t, idx).then(function (r) {
-                if (!r) return null;
+          var next = 0;
+          function worker() {
+            if (next >= tracks.length) return Promise.resolve();
+            var idx = next++;
+            var t = tracks[idx];
+            return buildTrack(t, idx).then(function (r) {
+              if (r) {
                 add(r.path, r.bytes);
                 r.extra.forEach(function (x) {
-                  if (x.m3u) m3uLines.push(x.m3u);
+                  if (x.m3u) m3uExtra.push(x.m3u);
                   else add(x.path, x.bytes);
                 });
-                return null;
-              });
+              }
+              return worker();
             });
-          });
-          return seq;
+          }
+          var workers = [];
+          for (var w = 0; w < CONCURRENT && w < tracks.length; w++) {
+            workers.push(worker());
+          }
+          return Promise.all(workers);
         }).then(function () {
+          m3uLines = m3uLines.concat(m3uExtra);
           var addedCovers = {};
           tracks.forEach(function (r) {
             var cov = coverFor(r);
