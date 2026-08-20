@@ -9,7 +9,7 @@
   }
 
   var SPINE = (g.SPINE = g.SPINE || {});
-  SPINE.version = "0.17.4";
+  SPINE.version = "0.17.6";
   SPINE.booted = false;
   SPINE.warmupEnabled = true;
   SPINE.app = { bundleTime: g.__BUNDLE_START_TIME__ || 0 };
@@ -3310,102 +3310,105 @@
     var coverSeq = Promise.resolve();
     groups.forEach(function (g) {
       coverSeq = coverSeq.then(function () {
+        if (!opts.completeAlbums || !opts.completeAlbums[g.ak]) return null;
         return resolveCover(fs, g.tracks[0]).then(function (bytes) {
           g.cover = bytes || null;
           return null;
         }).catch(function () { g.cover = null; return null; });
       });
     });
-    function embedBytes(bytes, t, idx, cov) {
-      var ext = String(t.ext || "").toLowerCase();
-      if (ext !== "mp3" && ext !== "mp2" && ext !== "flac") return bytes;
-      var durMs = durationMs(t.duration);
-      var meta = {
-        title: t.title,
-        artist: t.artist,
-        album: t.album,
-        index: idx + 1,
-        durationMs: durMs
-      };
-      if (ext === "mp3" || ext === "mp2") {
-        return prependU8(id3v2Tag(meta, cov), bytes);
+    function cleanDir() {
+      if (typeof fs.deleteAsync === "function") {
+        return fs.deleteAsync(dir, { idempotent: true }).catch(function () {});
       }
-      return flacEmbed(bytes, meta, cov);
+      return Promise.resolve();
     }
-    return coverSeq.then(function () {
-      var uris = [];
-      var coverUris = [];
-      var globalIdx = 0;
-      var seq = Promise.resolve();
-      groups.forEach(function (g) {
-        g.tracks.forEach(function (t) {
-          var idx = globalIdx++;
-          var folder = g.folder;
-          var nn = ("0" + (idx + 1)).slice(-2);
-          var dest = dir + folder + nn + " - " + sanitize(t.title) + "." + t.ext;
-          var mk = (typeof fs.makeDirectoryAsync === "function")
-            ? fs.makeDirectoryAsync(dir + folder, { intermediates: true, idempotent: true }).catch(function () {})
-            : Promise.resolve();
-          seq = seq.then(function () {
-            return mk.then(function () {
-              var ext = String(t.ext || "").toLowerCase();
-              if (ext === "mp3" || ext === "mp2" || ext === "flac") {
-                if (typeof fs.readAsStringAsync !== "function" || typeof fs.writeAsStringAsync !== "function") return null;
-                return fs.readAsStringAsync(t.uri, { encoding: "base64" }).then(function (b64) {
-                  var bytes = b64ToU8(b64, null);
-                  if (!bytes || !bytes.length) return null;
-                  var out = embedBytes(bytes, t, idx, g.cover);
-                  var outB64 = u8ToB64(out, null);
-                  if (!outB64) return null;
-                  return fs.writeAsStringAsync(dest, outB64, { encoding: "base64" }).then(function () {
-                    uris.push(dest);
-                    if (onProgress) onProgress(idx + 1, tracks.length, t.title);
-                    return null;
-                  });
+    return cleanDir().then(function () {
+      return coverSeq.then(function () {
+        var uris = [];
+        var coverUris = [];
+        var globalIdx = 0;
+        var seq = Promise.resolve();
+        groups.forEach(function (g) {
+          g.tracks.forEach(function (t) {
+            var idx = globalIdx++;
+            var folder = g.folder;
+            var nn = ("0" + (idx + 1)).slice(-2);
+            var dest = dir + folder + nn + " - " + sanitize(t.title) + "." + t.ext;
+            var mk = (typeof fs.makeDirectoryAsync === "function")
+              ? fs.makeDirectoryAsync(dir + folder, { intermediates: true, idempotent: true }).catch(function () {})
+              : Promise.resolve();
+            seq = seq.then(function () {
+              return mk.then(function () {
+                if (typeof fs.copyAsync !== "function") return null;
+                return fs.copyAsync({ from: t.uri, to: dest }).then(function () {
+                  uris.push(dest);
+                  if (onProgress) onProgress(idx + 1, tracks.length, t.title);
+                  return null;
                 }).catch(function () { return null; });
-              }
-              if (typeof fs.copyAsync !== "function") return null;
-              return fs.copyAsync({ from: t.uri, to: dest }).then(function () {
-                uris.push(dest);
-                if (onProgress) onProgress(idx + 1, tracks.length, t.title);
+              });
+            });
+          });
+        });
+        return seq.then(function () {
+          var wseq = Promise.resolve();
+          groups.forEach(function (g) {
+            if (!g.cover || !g.cover.length) return;
+            var dest = dir + g.folder + "cover.jpg";
+            var b64 = u8ToB64(g.cover, null);
+            if (!b64 || typeof fs.writeAsStringAsync !== "function") return;
+            wseq = wseq.then(function () {
+              return fs.writeAsStringAsync(dest, b64, { encoding: "base64" }).then(function () {
+                coverUris.push(dest);
                 return null;
               }).catch(function () { return null; });
             });
           });
-        });
-      });
-      return seq.then(function () {
-        var wseq = Promise.resolve();
-        groups.forEach(function (g) {
-          if (!g.cover || !g.cover.length) return;
-          if (!opts.completeAlbums || !opts.completeAlbums[g.ak]) return;
-          var dest = dir + g.folder + "cover.jpg";
-          var b64 = u8ToB64(g.cover, null);
-          if (!b64 || typeof fs.writeAsStringAsync !== "function") return;
-          wseq = wseq.then(function () {
-            return fs.writeAsStringAsync(dest, b64, { encoding: "base64" }).then(function () {
-              coverUris.push(dest);
-              return null;
-            }).catch(function () { return null; });
+          return wseq.then(function () {
+            return buildM3u(fs, dir, tracks, groups).then(function (m3uUri) {
+              var shareUris = uris.concat(coverUris);
+              if (m3uUri) shareUris.push(m3uUri);
+              if (!uris.length && !coverUris.length) return null;
+              return {
+                mode: "direct",
+                uri: shareUris,
+                name: null,
+                count: uris.length,
+                tracks: tracks,
+                manifest: m3uUri || null,
+                metaFormat: "m3u",
+                zip: null,
+                b64: null,
+                exportDir: dir
+              };
+            });
           });
-        });
-        return wseq.then(function () {
-          if (!uris.length && !coverUris.length) return null;
-          return {
-            mode: "direct",
-            uri: uris.concat(coverUris),
-            name: null,
-            count: uris.length,
-            tracks: tracks,
-            manifest: null,
-            metaFormat: null,
-            zip: null,
-            b64: null,
-            exportDir: dir
-          };
         });
       });
     });
+  }
+
+  function buildM3u(fs, dir, tracks, groups) {
+    if (!fs || typeof fs.writeAsStringAsync !== "function") return Promise.resolve(null);
+    function folderFor(t) {
+      for (var i = 0; i < groups.length; i++) {
+        var g = groups[i];
+        if (g.tracks.indexOf(t) !== -1) return g.folder;
+      }
+      return sanitize(t.artist || "Unknown") + "/" + sanitize(t.album || "Unknown") + "/";
+    }
+    var lines = ["#EXTM3U"];
+    tracks.forEach(function (t, i) {
+      var nn = ("0" + (i + 1)).slice(-2);
+      var rel = folderFor(t) + nn + " - " + sanitize(t.title) + "." + t.ext;
+      var dur = durationSeconds(t.duration);
+      lines.push("#EXTINF:" + (dur || "-1") + "," + t.title);
+      lines.push("./" + rel);
+    });
+    var uri = dir + "export.m3u";
+    return fs.writeAsStringAsync(uri, lines.join("\n") + "\n", {}).then(function () {
+      return uri;
+    }).catch(function () { return null; });
   }
 
   function normTrackKey(t) {
@@ -3421,8 +3424,6 @@
     }
     dr.mode = "direct";
     dr.name = null;
-    dr.manifest = null;
-    dr.metaFormat = null;
     dr.zip = null;
     dr.b64 = null;
     return dr;
@@ -4355,12 +4356,16 @@
           try {
             if (spine.exporter && typeof spine.exporter.shareZip === "function") {
               spine.exporter.shareZip(spine, res.uri, { exportDir: res.exportDir }).then(function (sh) {
-                if (sh && sh.ok) {
-                  ui.Alert("Export music", res.count + " track(s) ready. Use the share sheet to save to Files/apps.", [{ text: "OK" }]);
-                } else {
+                if (!(sh && sh.ok)) {
                   var where = Array.isArray(res.uri) ? res.uri.join(" , ") : res.uri;
                   ui.Alert("Export music", (Array.isArray(res.uri) ? "Arquivos prontos: " : "Arquivo criado: ") + where + (sh && sh.reason ? " (share: " + sh.reason + ")" : ""), [{ text: "OK" }]);
                 }
+                try {
+                  var fs2 = spine.storage && spine.storage.fs ? spine.storage.fs() : null;
+                  if (fs2 && typeof fs2.deleteAsync === "function" && res && res.exportDir) {
+                    fs2.deleteAsync(res.exportDir, { idempotent: true }).catch(function () {});
+                  }
+                } catch (e3) {}
               }, function () {});
             }
           } catch (e2) {}
