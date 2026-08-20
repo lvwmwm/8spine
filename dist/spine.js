@@ -9,7 +9,7 @@
   }
 
   var SPINE = (g.SPINE = g.SPINE || {});
-  SPINE.version = "0.17.3";
+  SPINE.version = "0.17.4";
   SPINE.booted = false;
   SPINE.warmupEnabled = true;
   SPINE.app = { bundleTime: g.__BUNDLE_START_TIME__ || 0 };
@@ -2878,6 +2878,17 @@
     return tryNext();
   }
 
+  function coverUri(spine, track) {
+    var fs = spine && spine.storage ? spine.storage.fs() : null;
+    if (!fs || !track || !track.artist) return Promise.resolve(null);
+    return resolveCover(fs, track).then(function (bytes) {
+      if (!bytes || !bytes.length) return null;
+      var b64 = u8ToB64(bytes, null);
+      if (!b64) return null;
+      return "data:image/jpeg;base64," + b64;
+    }).catch(function () { return null; });
+  }
+
   
   
   
@@ -3174,7 +3185,10 @@
 
   function exportMusic(spine, onProgress, opts) {
     opts = opts || {};
-    return listDownloads(spine).then(function (tracks) {
+    var src = (Array.isArray(opts.tracks) && opts.tracks.length)
+      ? Promise.resolve(opts.tracks)
+      : listDownloads(spine);
+    return src.then(function (tracks) {
       if (!tracks.length) {
         return Promise.reject(new Error("No downloaded music found"));
       }
@@ -3289,6 +3303,8 @@
     buildZip: buildZip,
     writeZip: writeZip,
     exportMusic: exportMusic,
+    coverUri: coverUri,
+    resolveCover: resolveCover,
     shareZip: shareZip,
     warmup: warmup,
     parseFilename: parseFilename,
@@ -3752,6 +3768,32 @@
     
     
     
+    function exportTrackKey(t) {
+      if (!t) return "";
+      if (t.key) return "key:" + t.key;
+      if (t.uri) return "uri:" + t.uri;
+      return "meta:" + (t.title || "") + ":" + (t.artist || "") + ":" + (t.album || "");
+    }
+    function exportAlbumKey(t) {
+      return ((t && t.artist) || "Unknown Artist") + "\u0000" + ((t && t.album) || "");
+    }
+    function groupExportAlbums(tracks) {
+      var groups = [];
+      var map = {};
+      (tracks || []).forEach(function (t) {
+        if (!t) return;
+        var ak = exportAlbumKey(t);
+        var g = map[ak];
+        if (!g) {
+          g = { key: ak, artist: t.artist || "Unknown Artist", album: t.album || "", tracks: [] };
+          map[ak] = g;
+          groups.push(g);
+        }
+        g.tracks.push(t);
+      });
+      return groups;
+    }
+
     function ExportPage(props) {
       var R = ui.react();
       var busyState = R.useState(false);
@@ -3763,8 +3805,76 @@
       var setStatus = statusState[1];
       var meta = metaState[0] || "json";
       var setMeta = metaState[1];
-      
-      
+      var preTracks = null;
+      try {
+        var pp = (props.route && props.route.route && props.route.route.params) || {};
+        if (Array.isArray(pp.tracks)) preTracks = pp.tracks;
+      } catch (e) {}
+      var tracksState = R.useState(preTracks || []);
+      var loadingState = R.useState(!preTracks);
+      var selModeState = R.useState(false);
+      var selKeysState = R.useState([]);
+      var expandedState = R.useState({});
+      var coversState = R.useState({});
+      var tracks = tracksState[0] || [];
+      var setTracks = tracksState[1];
+      var loading = loadingState[0] === true;
+      var setLoading = loadingState[1];
+      var selMode = selModeState[0] === true;
+      var setSelMode = selModeState[1];
+      var selKeys = selKeysState[0] || [];
+      var setSelKeys = selKeysState[1];
+      var expanded = expandedState[0] || {};
+      var setExpanded = expandedState[1];
+      var covers = coversState[0] || {};
+      var setCovers = coversState[1];
+      var mounted = true;
+      R.useEffect(function () {
+        if (!preTracks) {
+          if (spine.exporter && typeof spine.exporter.listDownloads === "function") {
+            Promise.resolve(spine.exporter.listDownloads(spine)).then(function (list) {
+              if (!mounted) return;
+              try { setTracks(list || []); } catch (e) {}
+              try { setLoading(false); } catch (e) {}
+            }).catch(function () {
+              if (!mounted) return;
+              try { setLoading(false); } catch (e) {}
+            });
+          } else {
+            try { setLoading(false); } catch (e) {}
+          }
+        } else {
+          try { setLoading(false); } catch (e) {}
+        }
+        return function () { mounted = false; };
+      }, []);
+      R.useEffect(function () {
+        if (!spine.exporter || typeof spine.exporter.coverUri !== "function") return;
+        var list = tracks || [];
+        var done = {};
+        var seq = Promise.resolve();
+        list.forEach(function (t) {
+          if (!t) return;
+          var ak = exportAlbumKey(t);
+          if (!ak || done[ak]) return;
+          done[ak] = true;
+          seq = seq.then(function () {
+            return Promise.resolve(spine.exporter.coverUri(spine, t)).then(function (uri) {
+              if (!mounted || !uri) return null;
+              try {
+                setCovers(function (prev) {
+                  var n = {};
+                  var k;
+                  for (k in prev) n[k] = prev[k];
+                  n[ak] = uri;
+                  return n;
+                });
+              } catch (e) {}
+              return null;
+            }).catch(function () { return null; });
+          });
+        });
+      }, [tracks]);
       try {
         return buildExportPageBody(props.spine, props.route, {
           busy: busy,
@@ -3772,7 +3882,19 @@
           status: status,
           setStatus: setStatus,
           meta: meta,
-          setMeta: setMeta
+          setMeta: setMeta,
+          tracks: tracks,
+          setTracks: setTracks,
+          loading: loading,
+          setLoading: setLoading,
+          selMode: selMode,
+          setSelMode: setSelMode,
+          selKeys: selKeys,
+          setSelKeys: setSelKeys,
+          expanded: expanded,
+          setExpanded: setExpanded,
+          covers: covers,
+          setCovers: setCovers
         });
       } catch (e) {
         return null;
@@ -3787,6 +3909,18 @@
       var status = fb.status || "";
       var meta = fb.meta || "json";
       var setMeta = fb.setMeta || null;
+      var tracks = fb.tracks || [];
+      var setTracks = fb.setTracks || null;
+      var loading = !!fb.loading;
+      var setLoading = fb.setLoading || null;
+      var selMode = !!fb.selMode;
+      var setSelMode = fb.setSelMode || null;
+      var selKeys = fb.selKeys || [];
+      var setSelKeys = fb.setSelKeys || null;
+      var expanded = fb.expanded || {};
+      var setExpanded = fb.setExpanded || null;
+      var covers = fb.covers || {};
+      var setCovers = fb.setCovers || null;
       var nav = null;
       var theme = {};
       try {
@@ -3845,6 +3979,74 @@
           try { setStatus(msg); } catch (e) {}
         }
       }
+      function toggleTrackSel(key) {
+        if (!key || !setSelKeys) return;
+        try {
+          setSelKeys(function (prev) {
+            var list = (prev || []).slice();
+            var i = list.indexOf(key);
+            if (i >= 0) list.splice(i, 1);
+            else list.push(key);
+            return list;
+          });
+        } catch (e) {}
+      }
+      function toggleExpanded(ak) {
+        if (!ak || !setExpanded) return;
+        try {
+          setExpanded(function (prev) {
+            var n = {};
+            var k;
+            for (k in prev) n[k] = prev[k];
+            if (n[ak]) delete n[ak];
+            else n[ak] = true;
+            return n;
+          });
+        } catch (e) {}
+      }
+      function toggleAlbumSel(g) {
+        if (!g || !setSelKeys) return;
+        var keys = [];
+        (g.tracks || []).forEach(function (t) {
+          var k = exportTrackKey(t);
+          if (k) keys.push(k);
+        });
+        var cur = selKeys || [];
+        var all = keys.length > 0 && keys.every(function (k) { return cur.indexOf(k) >= 0; });
+        try {
+          setSelKeys(function (prev) {
+            var list = (prev || []).slice();
+            if (all) {
+              keys.forEach(function (k) {
+                var i = list.indexOf(k);
+                if (i >= 0) list.splice(i, 1);
+              });
+            } else {
+              keys.forEach(function (k) {
+                if (list.indexOf(k) < 0) list.push(k);
+              });
+            }
+            return list;
+          });
+        } catch (e) {}
+      }
+      function toggleSelectAll() {
+        if (!setSelKeys) return;
+        var keys = [];
+        (tracks || []).forEach(function (t) {
+          var k = exportTrackKey(t);
+          if (k) keys.push(k);
+        });
+        var cur = selKeys || [];
+        var all = keys.length > 0 && keys.every(function (k) { return cur.indexOf(k) >= 0; });
+        try {
+          setSelKeys(all ? [] : keys);
+        } catch (e) {}
+      }
+      function cancelSelection() {
+        if (setSelMode) { try { setSelMode(false); } catch (e) {} }
+        if (setSelKeys) { try { setSelKeys([]); } catch (e2) {} }
+      }
       function runExport() {
         if (exporting) return;
         exporting = true;
@@ -3852,12 +4054,31 @@
           try { setBusy(true); } catch (e) {}
         }
         setFeedback("Preparing files...");
+        var selected = null;
+        if (selMode) {
+          var keys = {};
+          (selKeys || []).forEach(function (k) { if (k) keys[k] = true; });
+          selected = (tracks || []).filter(function (t) { return keys[exportTrackKey(t)]; });
+        } else if (tracks && tracks.length) {
+          selected = tracks;
+        }
+        if (selMode && (!selected || !selected.length)) {
+          exporting = false;
+          if (setBusy) {
+            try { setBusy(false); } catch (e) {}
+          }
+          setFeedback("");
+          ui.Alert("Export music", "Select at least one track to export.", [{ text: "OK" }]);
+          return;
+        }
+        var opts = { metaFormat: meta };
+        if (selected && selected.length) opts.tracks = selected;
         var p = null;
         try {
           if (spine.exporter && typeof spine.exporter.exportMusic === "function") {
             p = spine.exporter.exportMusic(spine, function (idx, total, msg) {
               setFeedback((total > 1 ? "(" + idx + "/" + total + ") " : "") + (msg || "Exporting..."));
-            }, { metaFormat: meta });
+            }, opts);
           }
         } catch (e) {}
         if (!p || typeof p.then !== "function") {
@@ -3907,111 +4128,201 @@
           pointerEvents: "none"
         });
       }
-      var backBtn = h(pressType, {
-        style: styles.backButtonContainer,
-        onPress: goBack,
-        hitSlop: 10
-      }, Ion && Ion.Ionicons ? h(Ion.Ionicons, { name: "chevron-back", size: 32, color: theme.primaryText }) : null);
-      var header = h(RN.View, { style: styles.settingsPageHeader },
-        [blurEl, backBtn, h(RN.Text, {
-          style: [styles.settingsPageTitle, { color: theme.primaryText }],
-          children: "Export music"
-        })].filter(function (x) { return x !== null; }));
+      var nSel = selKeys.length;
+      var backBtn = null;
+      var headerActions = null;
+      if (selMode) {
+        var allSel = tracks.length > 0 && tracks.every(function (t) { return selKeys.indexOf(exportTrackKey(t)) >= 0; });
+        backBtn = h(pressType, {
+          style: styles.backButtonContainer,
+          onPress: cancelSelection,
+          hitSlop: 10
+        }, Ion && Ion.Ionicons ? h(Ion.Ionicons, { name: "close", size: 32, color: theme.primaryText }) : null);
+        headerActions = h(RN.View, { style: { flexDirection: "row", alignItems: "center", gap: 4 } }, [
+          h(pressType, {
+            key: "spine-export-selectall",
+            onPress: toggleSelectAll,
+            hitSlop: 8,
+            style: { minWidth: 40, minHeight: 40, alignItems: "center", justifyContent: "center" }
+          }, [
+            Ion && Ion.Ionicons ? h(Ion.Ionicons, { name: allSel ? "checkbox" : "checkbox-outline", size: 24, color: theme.primaryText }) : null
+          ].filter(function (x) { return x !== null; })),
+          h(pressType, {
+            key: "spine-export-run-row",
+            onPress: runExport,
+            disabled: nSel === 0,
+            hitSlop: 8,
+            style: [
+              { minWidth: 40, minHeight: 40, alignItems: "center", justifyContent: "center" },
+              (nSel === 0) ? { opacity: 0.35 } : null
+            ].filter(function (x) { return x !== null; })
+          }, [
+            Ion && Ion.Ionicons ? h(Ion.Ionicons, { name: "share-outline", size: 24, color: theme.primaryText }) : null
+          ].filter(function (x) { return x !== null; }))
+        ]);
+      } else {
+        backBtn = h(pressType, {
+          style: styles.backButtonContainer,
+          onPress: goBack,
+          hitSlop: 10
+        }, Ion && Ion.Ionicons ? h(Ion.Ionicons, { name: "chevron-back", size: 32, color: theme.primaryText }) : null);
+        headerActions = h(RN.View, { style: { flexDirection: "row", alignItems: "center", gap: 4 } }, [
+          h(pressType, {
+            key: "spine-export-select",
+            onPress: function () {
+              if (setSelMode) { try { setSelMode(true); } catch (e) {} }
+              if (setSelKeys) { try { setSelKeys([]); } catch (e2) {} }
+            },
+            hitSlop: 8,
+            style: { paddingHorizontal: 10, paddingVertical: 8 }
+          }, [
+            h(RN.Text, { style: { fontSize: 16, fontWeight: "600", color: theme.accent || theme.primaryText }, children: "Select" })
+          ]),
+          h(pressType, {
+            key: "spine-export-run-row",
+            onPress: runExport,
+            hitSlop: 8,
+            style: { minWidth: 40, minHeight: 40, alignItems: "center", justifyContent: "center" }
+          }, [
+            Ion && Ion.Ionicons ? h(Ion.Ionicons, { name: "download-outline", size: 24, color: theme.primaryText }) : null
+          ].filter(function (x) { return x !== null; }))
+        ]);
+      }
+      var header = h(RN.View, { style: styles.settingsPageHeader }, [
+        blurEl,
+        backBtn,
+        h(RN.View, { style: { flex: 1, paddingLeft: 4, paddingRight: 4 } }, [
+          h(RN.Text, { style: [styles.settingsPageTitle, { color: theme.primaryText }], children: selMode ? (nSel + " Selected") : "Export music" })
+        ]),
+        headerActions
+      ].filter(function (x) { return x !== null; }));
 
       
       
-      var exportRow = h(pressType, {
-        key: "spine-export-run-row",
-        style: [
-          styles.settingsRowGrouped,
-          styles.settingsRowFirst,
-          styles.settingsRowLast,
-          { borderBottomWidth: 0, backgroundColor: theme.card }
-        ],
-        onPress: runExport
-      }, [
-        h(RN.Text, { style: [styles.settingsRowText, { color: theme.primaryText }], children: "Export downloaded music" }),
-        Ion && Ion.Ionicons ? h(Ion.Ionicons, { name: "download-outline", size: 20, color: theme.secondaryText }) : null
-      ].filter(function (x) { return x !== null; }));
-      var exportGroup = (L && L.SettingsGroup) ? h(L.SettingsGroup, { theme: theme, children: exportRow }) : exportRow;
-      var exportSection = h(RN.View, {
-        style: styles.settingsSection,
-        children: [
-          h(RN.Text, {
-            style: [styles.settingsSectionTitle, { color: theme.secondaryText, marginLeft: 16, marginBottom: 8 }],
-            children: "Music"
-          }),
-          exportGroup
-        ]
-      });
-      
-      
-      
-      
-      
-      
-      
-      var META_OPTS = [
-        { key: "json", label: "JSON manifest", desc: "Single manifest.json with all tracks." },
-        { key: "m3u", label: "M3U playlist", desc: "playlist.m3u with paths + #EXTINF." },
-        { key: "txt", label: "TXT per track", desc: "One .txt file per track (sidecar)." },
-        { key: "embedded", label: "Embedded tags", desc: "ID3v2 (mp3) / Vorbis (flac) inside the files." }
-      ];
-      function radioRow(opt, first, last) {
-        var selected = meta === opt.key;
-        var rowStyle = [styles.settingsRowGrouped];
-        if (first) rowStyle.push(styles.settingsRowFirst);
-        if (last) rowStyle.push(styles.settingsRowLast);
-        rowStyle.push({ borderBottomColor: theme.border, borderBottomWidth: RN.StyleSheet && RN.StyleSheet.hairlineWidth ? RN.StyleSheet.hairlineWidth : 1, backgroundColor: theme.card });
+      var albumGroups = groupExportAlbums(tracks);
+      function albumCard(g, idx) {
+        var ak = g.key;
+        var isExpanded = expanded[ak] === true;
+        var cover = covers[ak] || null;
+        var cur = selKeys || [];
+        var nSelAlb = 0;
+        (g.tracks || []).forEach(function (t) {
+          if (cur.indexOf(exportTrackKey(t)) >= 0) nSelAlb++;
+        });
+        var allSelAlb = g.tracks.length > 0 && nSelAlb === g.tracks.length;
+        var someSelAlb = nSelAlb > 0;
+        var ImageC = null;
+        try { if (RN.Image && typeof RN.Image === "function") ImageC = RN.Image; } catch (e) {}
+        var artStyle = { width: 64, height: 64, borderRadius: 8 };
+        var artEl = null;
+        if (cover && ImageC) {
+          artEl = h(ImageC, { style: artStyle, source: { uri: cover } });
+        } else {
+          artEl = h(RN.View, { style: [artStyle, { backgroundColor: theme.border, alignItems: "center", justifyContent: "center" }] }, [
+            Ion && Ion.Ionicons ? h(Ion.Ionicons, { name: "disc-outline", size: 32, color: theme.secondaryText }) : null
+          ].filter(function (x) { return x !== null; }));
+        }
+        var infoEl = h(RN.View, { style: { flex: 1, marginLeft: 12, marginRight: 8 } }, [
+          h(RN.Text, { style: { color: theme.primaryText, fontSize: 17, fontWeight: "600", marginBottom: 4 }, numberOfLines: 1, children: g.album || "Unknown Album" }),
+          h(RN.Text, { style: { color: theme.secondaryText, fontSize: 14, marginBottom: 4 }, numberOfLines: 1, children: g.artist + " \u2022 " + g.tracks.length + " " + (g.tracks.length === 1 ? "track" : "tracks") })
+        ]);
+        var trailing = null;
+        if (selMode) {
+          var cname = allSelAlb ? "checkbox" : (someSelAlb ? "remove-circle" : "square-outline");
+          trailing = h(pressType, {
+            key: "spine-export-albumcheck-" + ak,
+            onPress: function () { toggleAlbumSel(g); },
+            hitSlop: 8,
+            style: { padding: 8, marginRight: 2 }
+          }, [
+            Ion && Ion.Ionicons ? h(Ion.Ionicons, { name: cname, size: 24, color: someSelAlb ? (theme.accent || theme.primaryText) : theme.secondaryText }) : null
+          ].filter(function (x) { return x !== null; }));
+        } else {
+          trailing = Ion && Ion.Ionicons ? h(Ion.Ionicons, { name: isExpanded ? "chevron-up" : "chevron-down", size: 24, color: theme.secondaryText }) : null;
+        }
+        var headerRow = h(pressType, {
+          key: "spine-export-album-" + ak,
+          style: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 12 },
+          onPress: selMode ? function () { toggleAlbumSel(g); } : function () { toggleExpanded(ak); }
+        }, [artEl, infoEl, trailing].filter(function (x) { return x !== null; }));
+        var cardChildren = [headerRow];
+        if (isExpanded) {
+          var rows = [];
+          (g.tracks || []).forEach(function (t, ti) {
+            var rk = exportTrackKey(t);
+            var r = buildTrackRow(t, rk, ti, g.tracks.length);
+            if (r) rows.push(r);
+          });
+          cardChildren.push(h(RN.View, { style: { height: 0.5, marginHorizontal: 16, backgroundColor: theme.border } }));
+          cardChildren.push(h(RN.View, { style: { paddingLeft: 8, paddingRight: 8, paddingBottom: 8 } }, rows));
+        }
+        return h(RN.View, {
+          key: "spine-export-album-card-" + ak,
+          style: { marginBottom: 8, marginHorizontal: 16, borderRadius: 12, borderWidth: 0.5, borderColor: theme.border, backgroundColor: theme.card, overflow: "hidden" }
+        }, cardChildren);
+      }
+      function buildTrackRow(t, key, idx, total) {
+        var isLast = idx === total - 1;
+        var isSel = selKeys.indexOf(key) >= 0;
+        var lead = null;
+        if (selMode) {
+          lead = h(pressType, {
+            key: "spine-export-trackcheck-" + key,
+            onPress: function () { toggleTrackSel(key); },
+            hitSlop: 8,
+            style: { padding: 8, marginRight: 2 }
+          }, [
+            Ion && Ion.Ionicons ? h(Ion.Ionicons, { name: isSel ? "checkbox" : "square-outline", size: 22, color: isSel ? (theme.accent || theme.primaryText) : theme.secondaryText }) : null
+          ].filter(function (x) { return x !== null; }));
+        } else {
+          lead = h(RN.View, { style: { width: 32, height: 32, borderRadius: 6, backgroundColor: theme.border, alignItems: "center", justifyContent: "center", marginRight: 12 } }, [
+            Ion && Ion.Ionicons ? h(Ion.Ionicons, { name: "musical-note", size: 16, color: theme.secondaryText }) : null
+          ].filter(function (x) { return x !== null; }));
+        }
+        var sub = (t.artist || "") + ((t.album && t.album !== "Unknown Album") ? " \u2022 " + t.album : "");
         return h(pressType, {
-          key: "spine-meta-" + opt.key,
-          accessibilityRole: "radio",
-          accessibilityState: { checked: selected },
-          onPress: function () {
-            if (setMeta) {
-              try { setMeta(opt.key); } catch (e) {}
-            }
-            try {
-              if (spine.prefs && typeof spine.prefs.set === "function") {
-                spine.prefs.set("exportMetaFormat", opt.key);
-              }
-            } catch (e2) {}
-          },
-          style: rowStyle
+          key: "spine-export-track-" + key,
+          onPress: selMode ? function () { toggleTrackSel(key); } : null,
+          style: { flexDirection: "row", alignItems: "center", paddingVertical: 10, paddingHorizontal: 20, borderBottomWidth: isLast ? 0 : 0.5, borderBottomColor: theme.border }
         }, [
-          h(RN.View, { style: [styles.settingsRowLeft, { flex: 1 }] }, [
-            h(RN.View, { style: { flex: 1 } }, [
-              h(RN.View, { style: { flexDirection: "row", alignItems: "center", gap: 8 } }, [
-                h(RN.Text, { style: [styles.settingsRowText, { color: theme.primaryText }], children: opt.label }),
-                (opt.key === "json")
-                  ? h(RN.View, { style: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, backgroundColor: theme.pillBackground, borderWidth: 1, borderColor: theme.pillBorder || theme.border } }, [
-                      h(RN.Text, { style: { color: theme.pillText || theme.primaryText, fontSize: 10, fontWeight: "800" }, children: "DEFAULT" })
-                    ])
-                  : null
-              ]),
-              h(RN.Text, { style: { color: theme.secondaryText, fontSize: 12, marginTop: 3, maxWidth: 280 }, children: opt.desc })
-            ])
-          ]),
-          Ion && Ion.Ionicons ? h(Ion.Ionicons, { name: selected ? "radio-button-on" : "radio-button-off", size: 22, color: selected ? (theme.accent || theme.primaryText) : theme.secondaryText }) : null
+          lead,
+          h(RN.View, { style: { flex: 1 } }, [
+            h(RN.Text, { style: { color: theme.primaryText, fontSize: 15, fontWeight: "500" }, numberOfLines: 1, children: t.title || t.filename }),
+            h(RN.Text, { style: { color: theme.secondaryText, fontSize: 12, marginTop: 2 }, numberOfLines: 1, children: sub })
+          ])
         ].filter(function (x) { return x !== null; }));
       }
-      var metaRows = META_OPTS.map(function (opt, i) {
-        return radioRow(opt, i === 0, i === META_OPTS.length - 1);
-      });
-      var metaGroup = (L && L.SettingsGroup) ? h(L.SettingsGroup, { theme: theme, children: metaRows }) : metaRows;
-      var metaSection = h(RN.View, {
-        style: styles.settingsSection,
-        children: [
-          h(RN.Text, {
-            style: [styles.settingsSectionTitle, { color: theme.secondaryText, marginLeft: 16, marginBottom: 8 }],
-            children: "Metadata"
-          }),
-          metaGroup
-        ]
-      });
+      var bodyEl = null;
+      if (loading) {
+        var ai2 = null;
+        try { ai2 = RN.ActivityIndicator; } catch (e) {}
+        bodyEl = h(RN.View, { style: { flex: 1, justifyContent: "center", alignItems: "center" } }, [
+          (typeof ai2 === "function" || (ai2 && typeof ai2.render === "function")) ? h(ai2, { size: "large", color: theme.accent }) : null
+        ].filter(function (x) { return x !== null; }));
+      } else if (!tracks.length) {
+        bodyEl = h(RN.View, { style: { flex: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 40 } }, [
+          Ion && Ion.Ionicons ? h(Ion.Ionicons, { name: "download-outline", size: 64, color: theme.secondaryText }) : null,
+          h(RN.Text, { style: { fontSize: 20, fontWeight: "600", marginTop: 16, color: theme.secondaryText }, children: "No downloaded tracks" }),
+          h(RN.Text, { style: { fontSize: 14, marginTop: 8, textAlign: "center", color: theme.secondaryText }, children: "Downloaded music will appear here" })
+        ].filter(function (x) { return x !== null; }));
+      } else {
+        var statsLine = tracks.length + " " + (tracks.length === 1 ? "track" : "tracks") + " downloaded" + (albumGroups.length ? " \u2022 " + albumGroups.length + " " + (albumGroups.length === 1 ? "album" : "albums") : "");
+        var sv = null;
+        try { sv = RN.ScrollView; } catch (e) {}
+        var scrollEl = null;
+        if (typeof sv === "function") {
+          scrollEl = h(sv, { style: { flex: 1 }, contentContainerStyle: { paddingBottom: 100 } }, albumGroups.map(function (g, i) { return albumCard(g, i); }));
+        } else {
+          scrollEl = h(RN.View, { style: { flex: 1 } }, albumGroups.map(function (g, i) { return albumCard(g, i); }));
+        }
+        bodyEl = h(RN.View, { style: { flex: 1 } }, [
+          h(RN.Text, { style: { paddingHorizontal: 16, paddingVertical: 12, fontSize: 14, color: theme.secondaryText }, children: statsLine }),
+          scrollEl
+        ]);
+      }
       var content = h(RN.View, {
         style: { flex: 1, width: pageWidth || undefined, alignSelf: "center" },
-        children: [exportSection, metaSection].filter(function (x) { return x !== null; })
+        children: [bodyEl].filter(function (x) { return x !== null; })
       });
       
       
