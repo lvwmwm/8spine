@@ -782,12 +782,16 @@
           try {
             if (spine.exporter && typeof spine.exporter.shareZip === "function") {
               spine.exporter.shareZip(spine, res.uri, { exportDir: res.exportDir }).then(function (sh) {
-                if (sh && sh.ok) {
-                  ui.Alert("Export music", res.count + " track(s) ready. Use the share sheet to save to Files/apps.", [{ text: "OK" }]);
-                } else {
+                if (!(sh && sh.ok)) {
                   var where = Array.isArray(res.uri) ? res.uri.join(" , ") : res.uri;
                   ui.Alert("Export music", (Array.isArray(res.uri) ? "Arquivos prontos: " : "Arquivo criado: ") + where + (sh && sh.reason ? " (share: " + sh.reason + ")" : ""), [{ text: "OK" }]);
                 }
+                try {
+                  var fs2 = spine.storage && spine.storage.fs ? spine.storage.fs() : null;
+                  if (fs2 && typeof fs2.deleteAsync === "function" && res && res.exportDir) {
+                    fs2.deleteAsync(res.exportDir, { idempotent: true }).catch(function () {});
+                  }
+                } catch (e3) {}
               }, function () {});
             }
           } catch (e2) {}
