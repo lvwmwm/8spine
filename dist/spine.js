@@ -2568,6 +2568,20 @@
     return d == null ? "" : String(d);
   }
 
+  function durationSeconds(v) {
+    var n = parseInt(v, 10);
+    if (isNaN(n) || n <= 0) return "";
+    if (n > 1000) return String(Math.round(n / 1000));
+    return String(n);
+  }
+
+  function durationMs(v) {
+    var n = parseInt(v, 10);
+    if (isNaN(n) || n <= 0) return 0;
+    if (n > 1000) return n;
+    return n * 1000;
+  }
+
   
   function getUniqueTrackKey(item) {
     if (!item) return "";
@@ -2600,7 +2614,11 @@
         album: resolveAlbumTitle(t),
         duration: resolveTrackDuration(t),
         downloadedUri: t.downloadedUri,
-        uri: t.uri || t.url
+        uri: t.uri || t.url,
+        image: t.image,
+        artwork: t.artwork,
+        albumCover: t.albumCover,
+        imageUrl: t.imageUrl
       };
       var uk = getUniqueTrackKey(t);
       if (uk && !(uk in byUnique)) byUnique[uk] = meta;
@@ -2770,6 +2788,16 @@
         var p = parseFilename(t.filename);
         var trackMeta = t.meta || null;
         var keyMeta = parseKeyMeta(t.key);
+        var imageRef = null;
+        var artworkRef = null;
+        var albumCoverRef = null;
+        var imageUrlRef = null;
+        if (trackMeta) {
+          if (trackMeta.image !== undefined) imageRef = trackMeta.image;
+          if (trackMeta.artwork !== undefined) artworkRef = trackMeta.artwork;
+          if (trackMeta.albumCover !== undefined) albumCoverRef = trackMeta.albumCover;
+          if (trackMeta.imageUrl !== undefined) imageUrlRef = trackMeta.imageUrl;
+        }
         return {
           key: t.key,
           filename: t.filename,
@@ -2779,7 +2807,11 @@
           title: (trackMeta && trackMeta.title) || p.title || keyMeta.title || t.filename,
           album: (trackMeta && trackMeta.album) || keyMeta.album || "Unknown Album",
           ext: p.ext || "mp3",
-          duration: (trackMeta && trackMeta.duration) || keyMeta.duration || ""
+          duration: (trackMeta && trackMeta.duration) || keyMeta.duration || "",
+          image: imageRef,
+          artwork: artworkRef,
+          albumCover: albumCoverRef,
+          imageUrl: imageUrlRef
         };
       });
     });
@@ -2830,11 +2862,94 @@
       return { artist: artist, album: albumKey, name: coverName(artist, albumKey) };
     });
   }
+  function coverArtworkRefs(track) {
+    var refs = [];
+    function add(v) {
+      if (v === undefined || v === null || v === "") return;
+      refs.push(v);
+    }
+    if (!track || typeof track !== "object") return refs;
+    add(track.image);
+    add(track.artwork);
+    add(track.albumCover);
+    add(track.imageUrl);
+    var m = track.meta;
+    if (m && typeof m === "object" && m !== track) {
+      add(m.image);
+      add(m.artwork);
+      add(m.albumCover);
+      add(m.imageUrl);
+    }
+    var img = track.image;
+    if (img && typeof img === "object" && !Array.isArray(img)) {
+      add(img.image);
+      add(img.artwork);
+      add(img.albumCover);
+    }
+    if (Array.isArray(img)) {
+      for (var i = 0; i < img.length; i++) {
+        var it = img[i];
+        if (!it || typeof it !== "object") continue;
+        add(it["#text"] || it.url || it.text || it.image);
+      }
+    }
+    return refs;
+  }
+
+  function imageCacheKey(url) {
+    var s = String(url || "");
+    if (!s) return null;
+    var noScheme = s.replace(/^https?:\/\//, "");
+    var formatted = noScheme.replace(/[^a-z0-9]/gi, "_").toLowerCase();
+    var substr = formatted.slice(0, 80);
+    var noQ = s.split("?")[0];
+    var ext = "png";
+    if (!/\.png$/i.test(noQ)) {
+      ext = "webp";
+      if (!/\.webp$/i.test(noQ)) {
+        ext = "jpg";
+        if (/\.gif$/i.test(noQ)) ext = "gif";
+      }
+    }
+    var base = substr || "image";
+    return base + "_" + coverHash(s) + "." + ext;
+  }
+
+  function resolveAppArtworkUri(track) {
+    var m = metro();
+    if (!m || !track || typeof m.find !== "function") return Promise.resolve(null);
+    var fn = null;
+    try {
+      var hit = m.find(function (exps) {
+        var f = null;
+        try {
+          f = (exps && exps.getOfflineArtworkForTrack) ||
+            (exps && exps.default && exps.default.getOfflineArtworkForTrack);
+        } catch (e) {}
+        return typeof f === "function";
+      });
+      if (hit) {
+        var ex = hit.module;
+        try {
+          fn = (ex && ex.getOfflineArtworkForTrack) ||
+            (ex && ex.default && ex.default.getOfflineArtworkForTrack);
+        } catch (e) {}
+      }
+    } catch (e) {}
+    if (typeof fn !== "function") return Promise.resolve(null);
+    return Promise.resolve().then(function () {
+      return Promise.resolve(fn(track)).then(function (v) {
+        return (typeof v === "string" && v.length) ? v : null;
+      }).catch(function () { return null; });
+    });
+  }
+
   function resolveCover(fs, track) {
     if (!fs || !track || !track.artist) return Promise.resolve(null);
     var cd = fs.cacheDirectory || "";
     if (typeof fs.readAsStringAsync !== "function") return Promise.resolve(null);
-    var dir = cd + "artwork_cache/";
+    var artworkDir = cd + "artwork_cache/";
+    var imageDir = cd + "image_cache/";
     function read(ur) {
       return fs.readAsStringAsync(ur, { encoding: "base64" }).then(function (b64) {
         if (!b64) return null;
@@ -2843,39 +2958,66 @@
         return bytes;
       }).catch(function () { return null; });
     }
-    var cands = coverCandidates(track);
-    var idx = 0;
-    
-    
-    function tryNext() {
-      if (idx >= cands.length) return listByArtist();
-      var uri = dir + cands[idx].name;
-      idx++;
+    function readIf(uri) {
+      if (!uri) return Promise.resolve(null);
       if (typeof fs.getInfoAsync === "function") {
         return fs.getInfoAsync(uri, {}).then(function (info) {
-          return info && info.exists ? read(uri) : tryNext();
-        }).catch(function () { return tryNext(); });
+          return info && info.exists ? read(uri) : null;
+        }).catch(function () { return null; });
       }
-      return read(uri).then(function (b) {
-        return b ? b : tryNext();
+      return read(uri).catch(function () { return null; });
+    }
+    function localPathFor(str) {
+      var s = String(str || "");
+      if (s.indexOf("artwork_cache/") !== -1) return artworkDir + s.split("artwork_cache/").pop();
+      if (s.indexOf("image_cache/") !== -1) return imageDir + s.split("image_cache/").pop();
+      if (s.indexOf("library/") !== -1) return (fs.documentDirectory || "") + s.split("library/").pop();
+      if (s.indexOf("custom_artwork/") !== -1) return (fs.documentDirectory || "") + s.split("custom_artwork/").pop();
+      if (s.indexOf("artwork/") !== -1) return (fs.documentDirectory || "") + s.split("artwork/").pop();
+      if (s.indexOf("file://") === 0) return s;
+      return null;
+    }
+    var uris = [];
+    var seen = {};
+    function addUri(uri) {
+      if (uri && !seen[uri]) {
+        seen[uri] = true;
+        uris.push(uri);
+      }
+    }
+    var refs = coverArtworkRefs(track);
+    for (var r = 0; r < refs.length; r++) {
+      var str2 = String(refs[r] || "");
+      if (str2.indexOf("http://") === 0 || str2.indexOf("https://") === 0) {
+        var key = imageCacheKey(str2);
+        if (key) addUri(imageDir + key);
+      } else {
+        addUri(localPathFor(str2));
+      }
+    }
+    var cands = coverCandidates(track);
+    for (var c = 0; c < cands.length; c++) addUri(artworkDir + cands[c].name);
+    var idx = 0;
+    function next() {
+      if (idx >= uris.length) return Promise.resolve(null);
+      var uri = uris[idx++];
+      return readIf(uri).then(function (b) {
+        return (b && b.length) ? b : next();
       });
     }
-    function listByArtist() {
-      if (typeof fs.readDirectoryAsync !== "function") return Promise.resolve(null);
-      var artistPrefix = coverSanitize(track.artist).slice(0, 120);
-      return fs.readDirectoryAsync(dir).then(function (entries) {
-        if (!entries || !entries.length) return null;
-        var i2;
-        for (i2 = 0; i2 < entries.length; i2++) {
-          var en = entries[i2];
-          if (typeof en === "string" && en.slice(-4) === ".jpg" && en.indexOf(artistPrefix) === 0) {
-            return read(dir + en);
-          }
+    return resolveAppArtworkUri(track).then(function (appUri) {
+      if (appUri) {
+        if (!seen[appUri]) {
+          seen[appUri] = true;
+          uris.unshift(appUri);
         }
-        return null;
-      }).catch(function () { return null; });
-    }
-    return tryNext();
+        return readIf(appUri).then(function (b) {
+          if (b && b.length) return b;
+          return next();
+        });
+      }
+      return next();
+    });
   }
 
   function coverUri(spine, track) {
@@ -2954,8 +3096,7 @@
             if (metaFormat === "embedded") {
               
               
-              var durSec = parseInt(t.duration, 10);
-              var durMs = isNaN(durSec) ? 0 : durSec * 1000;
+              var durMs = durationMs(t.duration);
               var meta = {
                 title: t.title,
                 artist: t.artist,
@@ -3141,72 +3282,187 @@
   }
 
   
-  function exportDirect(spine, tracks, onProgress) {
+  function exportDirect(spine, tracks, onProgress, opts) {
+    opts = opts || {};
     var fs = spine && spine.storage ? spine.storage.fs() : null;
     if (!fs) return Promise.reject(new Error("FileSystem not found"));
     var doc = (fs.cacheDirectory || fs.documentDirectory || "");
     var dir = doc + "parasy8_export/";
-    var uris = [];
-    var seq = Promise.resolve();
-    tracks.forEach(function (t, idx) {
-      seq = seq.then(function () {
-        var nn = ("0" + (idx + 1)).slice(-2);
-        var folder = sanitize(t.artist) + "/" + sanitize(t.album) + "/";
-        var dest = dir + folder + nn + " - " + sanitize(t.title) + "." + t.ext;
-        var mk = (typeof fs.makeDirectoryAsync === "function")
-          ? fs.makeDirectoryAsync(dir + folder, { intermediates: true, idempotent: true }).catch(function () {})
-          : Promise.resolve();
-        return mk.then(function () {
-          if (typeof fs.copyAsync !== "function") return null;
-          return fs.copyAsync({ from: t.uri, to: dest }).then(function () {
-            uris.push(dest);
-            if (onProgress) onProgress(idx + 1, tracks.length, t.title);
-            return null;
-          }).catch(function () { return null; });
+    var groups = [];
+    var gmap = {};
+    tracks.forEach(function (t) {
+      var ak = (t.artist || "") + "\u0000" + (t.album || "");
+      var g = gmap[ak];
+      if (!g) {
+        g = {
+          ak: ak,
+          artist: t.artist || "Unknown Artist",
+          album: t.album || "",
+          folder: sanitize(t.artist || "Unknown") + "/" + sanitize(t.album || "Unknown") + "/",
+          tracks: [],
+          cover: null
+        };
+        gmap[ak] = g;
+        groups.push(g);
+      }
+      g.tracks.push(t);
+    });
+    var coverSeq = Promise.resolve();
+    groups.forEach(function (g) {
+      coverSeq = coverSeq.then(function () {
+        return resolveCover(fs, g.tracks[0]).then(function (bytes) {
+          g.cover = bytes || null;
+          return null;
+        }).catch(function () { g.cover = null; return null; });
+      });
+    });
+    function embedBytes(bytes, t, idx, cov) {
+      var ext = String(t.ext || "").toLowerCase();
+      if (ext !== "mp3" && ext !== "mp2" && ext !== "flac") return bytes;
+      var durMs = durationMs(t.duration);
+      var meta = {
+        title: t.title,
+        artist: t.artist,
+        album: t.album,
+        index: idx + 1,
+        durationMs: durMs
+      };
+      if (ext === "mp3" || ext === "mp2") {
+        return prependU8(id3v2Tag(meta, cov), bytes);
+      }
+      return flacEmbed(bytes, meta, cov);
+    }
+    return coverSeq.then(function () {
+      var uris = [];
+      var coverUris = [];
+      var globalIdx = 0;
+      var seq = Promise.resolve();
+      groups.forEach(function (g) {
+        g.tracks.forEach(function (t) {
+          var idx = globalIdx++;
+          var folder = g.folder;
+          var nn = ("0" + (idx + 1)).slice(-2);
+          var dest = dir + folder + nn + " - " + sanitize(t.title) + "." + t.ext;
+          var mk = (typeof fs.makeDirectoryAsync === "function")
+            ? fs.makeDirectoryAsync(dir + folder, { intermediates: true, idempotent: true }).catch(function () {})
+            : Promise.resolve();
+          seq = seq.then(function () {
+            return mk.then(function () {
+              var ext = String(t.ext || "").toLowerCase();
+              if (ext === "mp3" || ext === "mp2" || ext === "flac") {
+                if (typeof fs.readAsStringAsync !== "function" || typeof fs.writeAsStringAsync !== "function") return null;
+                return fs.readAsStringAsync(t.uri, { encoding: "base64" }).then(function (b64) {
+                  var bytes = b64ToU8(b64, null);
+                  if (!bytes || !bytes.length) return null;
+                  var out = embedBytes(bytes, t, idx, g.cover);
+                  var outB64 = u8ToB64(out, null);
+                  if (!outB64) return null;
+                  return fs.writeAsStringAsync(dest, outB64, { encoding: "base64" }).then(function () {
+                    uris.push(dest);
+                    if (onProgress) onProgress(idx + 1, tracks.length, t.title);
+                    return null;
+                  });
+                }).catch(function () { return null; });
+              }
+              if (typeof fs.copyAsync !== "function") return null;
+              return fs.copyAsync({ from: t.uri, to: dest }).then(function () {
+                uris.push(dest);
+                if (onProgress) onProgress(idx + 1, tracks.length, t.title);
+                return null;
+              }).catch(function () { return null; });
+            });
+          });
+        });
+      });
+      return seq.then(function () {
+        var wseq = Promise.resolve();
+        groups.forEach(function (g) {
+          if (!g.cover || !g.cover.length) return;
+          if (!opts.completeAlbums || !opts.completeAlbums[g.ak]) return;
+          var dest = dir + g.folder + "cover.jpg";
+          var b64 = u8ToB64(g.cover, null);
+          if (!b64 || typeof fs.writeAsStringAsync !== "function") return;
+          wseq = wseq.then(function () {
+            return fs.writeAsStringAsync(dest, b64, { encoding: "base64" }).then(function () {
+              coverUris.push(dest);
+              return null;
+            }).catch(function () { return null; });
+          });
+        });
+        return wseq.then(function () {
+          if (!uris.length && !coverUris.length) return null;
+          return {
+            mode: "direct",
+            uri: uris.concat(coverUris),
+            name: null,
+            count: uris.length,
+            tracks: tracks,
+            manifest: null,
+            metaFormat: null,
+            zip: null,
+            b64: null,
+            exportDir: dir
+          };
         });
       });
     });
-    return seq.then(function () {
-      if (!uris.length) return null;
-      return {
-        mode: "direct",
-        uri: uris,
-        name: null,
-        count: uris.length,
-        tracks: tracks,
-        manifest: null,
-        metaFormat: null,
-        zip: null,
-        b64: null,
-        exportDir: dir
-      };
-    });
+  }
+
+  function normTrackKey(t) {
+    if (!t) return "";
+    var k = getUniqueTrackKey(t);
+    if (k) return k.toLowerCase().trim();
+    return String(t.key || t.uri || "").toLowerCase().trim();
+  }
+
+  function finishDirect(dr) {
+    if (!dr || !dr.count) {
+      return Promise.reject(new Error("Direct copy failed for all tracks"));
+    }
+    dr.mode = "direct";
+    dr.name = null;
+    dr.manifest = null;
+    dr.metaFormat = null;
+    dr.zip = null;
+    dr.b64 = null;
+    return dr;
   }
 
   function exportMusic(spine, onProgress, opts) {
     opts = opts || {};
-    var src = (Array.isArray(opts.tracks) && opts.tracks.length)
-      ? Promise.resolve(opts.tracks)
-      : listDownloads(spine);
+    var preselected = (Array.isArray(opts.tracks) && opts.tracks.length);
+    var src = preselected ? Promise.resolve(opts.tracks) : listDownloads(spine);
     return src.then(function (tracks) {
       if (!tracks.length) {
         return Promise.reject(new Error("No downloaded music found"));
       }
-      // v0.17.3: exportDirect (copyAsync nativo, rapido) — arquivos ficam no
-      // cache na estrutura organizada (Artista/Album/NN) e o share usa o
-      // ARRAY desses uris via RNShare (Share.open). Sem ZIP em RAM: evita o
-      // "String length exceeds the limit" do Hermes com 45+ musicas.
-      return exportDirect(spine, tracks, onProgress).then(function (dr) {
-        if (!dr || !dr.uri || !dr.uri.length) {
-          return Promise.reject(new Error("Direct copy failed for all tracks"));
-        }
-        dr.mode = "direct";
-        dr.name = null;
-        dr.manifest = null;
-        dr.metaFormat = null;
-        dr.zip = null;
-        dr.b64 = null;
-        return dr;
+      if (!preselected) {
+        var allComplete = {};
+        tracks.forEach(function (t) {
+          allComplete[(t.artist || "") + "\u0000" + (t.album || "")] = true;
+        });
+        return exportDirect(spine, tracks, onProgress, { completeAlbums: allComplete }).then(finishDirect);
+      }
+      var selKeys = {};
+      tracks.forEach(function (t) {
+        var k = normTrackKey(t);
+        if (k) selKeys[k] = true;
+      });
+      return listDownloads(spine).then(function (all) {
+        var perAlbum = {};
+        all.forEach(function (t) {
+          var ak = (t.artist || "") + "\u0000" + (t.album || "");
+          (perAlbum[ak] = perAlbum[ak] || []).push(t);
+        });
+        var complete = {};
+        Object.keys(perAlbum).forEach(function (ak) {
+          var list = perAlbum[ak] || [];
+          var allIn = list.every(function (t) {
+            return !!selKeys[normTrackKey(t)];
+          });
+          if (allIn) complete[ak] = true;
+        });
+        return exportDirect(spine, tracks, onProgress, { completeAlbums: complete }).then(finishDirect);
       });
     });
   }
