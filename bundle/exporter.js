@@ -961,6 +961,17 @@
     return tryNext();
   }
 
+  function coverUri(spine, track) {
+    var fs = spine && spine.storage ? spine.storage.fs() : null;
+    if (!fs || !track || !track.artist) return Promise.resolve(null);
+    return resolveCover(fs, track).then(function (bytes) {
+      if (!bytes || !bytes.length) return null;
+      var b64 = u8ToB64(bytes, null);
+      if (!b64) return null;
+      return "data:image/jpeg;base64," + b64;
+    }).catch(function () { return null; });
+  }
+
   
   
   
@@ -1257,7 +1268,10 @@
 
   function exportMusic(spine, onProgress, opts) {
     opts = opts || {};
-    return listDownloads(spine).then(function (tracks) {
+    var src = (Array.isArray(opts.tracks) && opts.tracks.length)
+      ? Promise.resolve(opts.tracks)
+      : listDownloads(spine);
+    return src.then(function (tracks) {
       if (!tracks.length) {
         return Promise.reject(new Error("No downloaded music found"));
       }
@@ -1372,6 +1386,8 @@
     buildZip: buildZip,
     writeZip: writeZip,
     exportMusic: exportMusic,
+    coverUri: coverUri,
+    resolveCover: resolveCover,
     shareZip: shareZip,
     warmup: warmup,
     parseFilename: parseFilename,
