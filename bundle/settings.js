@@ -506,6 +506,7 @@
               " | swap: " + ((LYR && LYR.swap) || "-") +
               " | via: " + ((LYR && LYR.via) || "-") +
               " | src: " + ((LYR && LYR.lastSource) || "-") +
+              " | kw: " + (LYR && LYR.kawarp ? "ok" : "-") +
               " | t:" + ((LYR && LYR.lastTime) || 0) +
               ((LYR && LYR.timeSrc) ? "/" + LYR.timeSrc : "") +
               " lines:" + ((LYR && LYR.lastLines) || 0) +
@@ -753,10 +754,20 @@
 
         var PAD = Math.max(90, Math.round(boxH * 0.32));
         var children = [];
-        children.push(h(View, { key: "lyr-bg", style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(8,8,13,0.97)" } }));
-        if (pf.bg && imageUrl && Image) {
+        var KBg = (pf.bg && LYR.kawarp) || null;
+        if (KBg) {
+          children.push(h(KBg, {
+            key: "lyr-kwarp",
+            imageUrl: imageUrl,
+            backgroundColor: (p.backgroundColor && p.backgroundColor !== "transparent") ? p.backgroundColor : "#000000",
+            isPlaying: p.isPlaying !== false
+          }));
+          children.push(h(View, { key: "lyr-kwarp-shade", pointerEvents: "none", style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(5,5,9,0.52)" } }));
+        } else if (pf.bg && imageUrl && Image) {
           children.push(h(Image, { key: "lyr-art", source: { uri: imageUrl }, resizeMode: "cover", style: { position: "absolute", top: -20, left: -20, right: -20, bottom: -20, opacity: 0.7 } }));
           children.push(h(View, { key: "lyr-shade", style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(6,6,10,0.72)" } }));
+        } else {
+          children.push(h(View, { key: "lyr-bg", style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(8,8,13,0.97)" } }));
         }
         if (pf.fade) {
           children.push(h(View, { key: "lyr-fade-t", pointerEvents: "none", style: { position: "absolute", top: 0, left: 0, right: 0, height: Math.round(boxH * 0.16), backgroundColor: "rgba(10,10,16,0.5)" } }));
@@ -1174,6 +1185,9 @@
           if (!isLyrics) return false;
           if (!LYR.orig && usable && !(d && d.__spineLyricsProxy === true)) {
             LYR.orig = d;
+          }
+          if (!LYR.kawarp && ex && ex.KawarpLyricsBackground) {
+            LYR.kawarp = ex.KawarpLyricsBackground;
           }
           if (!LYR.orig) return false;
           var V = LYR.view || buildLyricsView(spine);
