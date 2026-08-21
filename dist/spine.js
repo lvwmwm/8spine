@@ -9,7 +9,7 @@
   }
 
   var SPINE = (g.SPINE = g.SPINE || {});
-  SPINE.version = "0.17.13";
+  SPINE.version = "0.17.14";
   SPINE.booted = false;
   SPINE.warmupEnabled = true;
   SPINE.app = { bundleTime: g.__BUNDLE_START_TIME__ || 0 };
@@ -3667,7 +3667,7 @@
             }
             if (W && W !== type) type = W;
           }
-          if (LYR && LYR.on && !LYR.orig && props) {
+          if (LYR && !LYR.orig && props) {
             try {
               var hit = false;
               for (var qk in props) {
@@ -4654,43 +4654,81 @@
       try {
         LYR.on = spine.prefs.get("lyricsView", true) !== false;
       } catch (e) {}
+      function processLyricsModule(idStr, ex) {
+        try {
+          if (!ex || typeof ex !== "object") return false;
+          var d = (ex.__esModule && ex.default !== undefined) ? ex.default : null;
+          var inner = (d && typeof d === "object" && typeof d.type === "function") ? d.type : null;
+          var fnName = "";
+          if (typeof d === "function") fnName = d.name || d.displayName || "";
+          else if (inner) fnName = inner.name || inner.displayName || "";
+          var named = fnName === "LyricsView";
+          var usable = (typeof d === "function") || !!inner;
+          var isLyrics = named || idStr === "2644" ||
+            !!(d && d.__spineLyricsProxy === true);
+          if (!isLyrics) return false;
+          if (!LYR.orig && usable && !(d && d.__spineLyricsProxy === true)) {
+            LYR.orig = d;
+          }
+          if (!LYR.orig) return false;
+          var V = LYR.view || buildLyricsView(spine);
+          if (!V) {
+            LYR.state = "no-view";
+            return false;
+          }
+          LYR.view = V;
+          if (ex.__esModule && ex.default === LYR.orig) {
+            var sw = trySetDefault(ex, makeLyricsProxy(LYR));
+            LYR.swap = sw && sw.ok ? "ok" : "fail:" + ((sw && sw.reason) || "?");
+          }
+          LYR.state = "installed";
+          LYR.via = LYR.via || "scan:" + idStr;
+          return true;
+        } catch (e) {
+          return false;
+        }
+      }
+      function sweepLyrics() {
+        try {
+          if (LYR.state === "installed") return true;
+          var mm = spine.metro.mirror() || {};
+          if (mm["2644"] && mm["2644"].exports) {
+            if (processLyricsModule("2644", mm["2644"].exports)) return true;
+          }
+          for (var k in mm) {
+            var rec = mm[k];
+            if (!rec || !rec.exports) continue;
+            var exv = rec.exports;
+            if (!exv || typeof exv !== "object") continue;
+            var dv = (exv.__esModule && exv.default !== undefined) ? exv.default : null;
+            var tn = "";
+            if (typeof dv === "function") tn = dv.name || dv.displayName || "";
+            else if (dv && dv.type && typeof dv.type === "function") tn = dv.type.displayName || dv.type.name || "";
+            if (tn === "LyricsView" && processLyricsModule(String(k), exv)) return true;
+          }
+        } catch (e) {}
+        return false;
+      }
       try {
         spine.metro.pushCb(function (id, rec) {
           try {
-            var ex = rec.exports;
-            if (!ex) return;
-            var idStr = String(id);
-            var d = (ex.__esModule && ex.default !== undefined) ? ex.default : null;
-            var inner = (d && typeof d === "object" && typeof d.type === "function") ? d.type : null;
-            var fnName = "";
-            if (typeof d === "function") fnName = d.name || d.displayName || "";
-            else if (inner) fnName = inner.name || inner.displayName || "";
-            var named = fnName === "LyricsView";
-            var usable = (typeof d === "function") || !!inner;
-            var isLyrics = named || idStr === "2644" ||
-              !!(d && d.__spineLyricsProxy === true);
-            if (!isLyrics) return;
-            if (!LYR.orig && usable && !(d && d.__spineLyricsProxy === true)) {
-              LYR.orig = d;
-            }
-            if (!LYR.orig) return;
-            var V = LYR.view || buildLyricsView(spine);
-            if (!V) {
-              LYR.state = "no-view";
-              return;
-            }
-            LYR.view = V;
-            if (LYR.orig && ex.__esModule && ex.default === LYR.orig) {
-              var sw = trySetDefault(ex, makeLyricsProxy(LYR));
-              LYR.swap = sw && sw.ok ? "ok" : "fail:" + ((sw && sw.reason) || "?");
-            }
-            LYR.state = "installed";
+            if (!rec.exports) return;
+            processLyricsModule(String(id), rec.exports);
           } catch (e) {}
         });
         LYR.state = "watching";
       } catch (e) {
         LYR.state = "err:" + ((e && e.message) || String(e));
       }
+      try {
+        var sweeps = 0;
+        (function swp() {
+          try { if (sweepLyrics()) return; } catch (e1) {}
+          if (++sweeps < 12) {
+            try { setTimeout(swp, 2000); } catch (e2) {}
+          }
+        })();
+      } catch (e3) {}
       return LYR;
     }
 
