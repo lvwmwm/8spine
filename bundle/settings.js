@@ -555,33 +555,6 @@
       if (!Text || !View) return null;
 
       var LINE_H = 54;
-      var Mv = null;
-      var Lg = null;
-        try {
-          if (LYR.mv !== undefined) {
-            Mv = LYR.mv;
-            Lg = LYR.lg;
-          } else {
-            try {
-              var fMv = spine.metro.find(spine.metro.byName("MaskedView"));
-              if (fMv) Mv = interop(fMv.module);
-            } catch (eM1) {}
-            try {
-              var fLg = spine.metro.find(function (ex, meta) {
-                return meta && meta.id === "1945" && ex && (ex.LinearGradient || (ex.__esModule && ex.default));
-              });
-              if (fLg) Lg = fLg.module.LinearGradient || ((fLg.module.__esModule && fLg.module.default) || null);
-            } catch (eM2) {}
-            if (!Lg) {
-              try {
-                var fLg2 = spine.metro.find(spine.metro.byName("LinearGradient"));
-                if (fLg2) Lg = interop(fLg2.module);
-              } catch (eM4) {}
-            }
-            LYR.mv = Mv || null;
-            LYR.lg = Lg || null;
-          }
-        } catch (eM3) {}
       var Animated = null;
       try { Animated = (RN.Animated && typeof RN.Animated.timing === "function") ? RN.Animated : null; } catch (eA0) {}
 
@@ -811,9 +784,24 @@
         } else {
           children.push(h(View, { key: "lyr-bg", style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(8,8,13,0.97)" } }));
         }
-        if (pf.fade && !(Mv && Lg)) {
-          children.push(h(View, { key: "lyr-fade-t", pointerEvents: "none", style: { position: "absolute", top: 0, left: 0, right: 0, height: Math.round(boxH * 0.12), backgroundColor: "rgba(10,10,16,0.45)" } }));
-          children.push(h(View, { key: "lyr-fade-b", pointerEvents: "none", style: { position: "absolute", bottom: 0, left: 0, right: 0, height: Math.round(boxH * 0.1), backgroundColor: "rgba(10,10,16,0.45)" } }));
+        if (pf.fade && boxH > 0) {
+          var N = 10;
+          var fh = Math.round(boxH * 0.16);
+          var step = fh / N;
+          for (var s = 0; s < N; s++) {
+            var oT = 0.6 * (1 - (s + 0.5) / N);
+            children.push(h(View, {
+              key: "ft" + s,
+              pointerEvents: "none",
+              style: { position: "absolute", top: Math.round(s * step), left: 0, right: 0, height: Math.ceil(step) + 1, backgroundColor: "rgba(8,8,13," + oT.toFixed(3) + ")" }
+            }));
+            var oB = 0.55 * (1 - (s + 0.5) / N);
+            children.push(h(View, {
+              key: "fb" + s,
+              pointerEvents: "none",
+              style: { position: "absolute", bottom: Math.round(s * step), left: 0, right: 0, height: Math.ceil(step) + 1, backgroundColor: "rgba(8,8,13," + oB.toFixed(3) + ")" }
+            }));
+          }
         }
 
         var lineEls = [];
@@ -898,16 +886,6 @@
           scrollEl = h(View, { style: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 24 } }, lineEls);
         }
         var lyricsLayer = scrollEl;
-        if (Mv && Lg) {
-          lyricsLayer = h(Mv, {
-            key: "lyr-mask",
-            maskElement: h(Lg, {
-              colors: ["transparent", "black", "black", "transparent"],
-              locations: [0, 0.12, 0.84, 1],
-              style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }
-            })
-          }, scrollEl);
-        }
         children.push(lyricsLayer);
         return h(View, { style: { flex: 1, overflow: "hidden" } }, children);
       }
