@@ -377,6 +377,7 @@
           } else {
             parts.push("seen:0");
           }
+          parts.push("deep:" + ((LYR && LYR.deep) || "-") + "/" + ((LYR && LYR.deepHooks) || 0));
           var mm = null;
           try { mm = spine.metro.mirror() || {}; } catch (em2) {}
           var found = [];
@@ -1150,7 +1151,8 @@
         var sweeps = 0;
         (function swp() {
           try { if (sweepLyrics()) return; } catch (e1) {}
-          if (++sweeps < 12) {
+          sweeps++;
+          if (sweeps < 12) {
             try { setTimeout(swp, 2000); } catch (e2) {}
           }
         })();
@@ -2343,9 +2345,10 @@
       }
       if (st.Wrapped && st.Wrapped[TOKEN]) return true;
 
-      if (!st.hooked) {
+      if (!st.jsxRichHooked) {
         var r = hookJsxRuntime(st);
-        st.hooked = r.hooked;
+        st.jsxRichHooked = true;
+        st.hooked = r.hooked || st.hooked;
         spine.log("settings", "jsx-runtime hook: " + r.stages.join(","));
       }
 
