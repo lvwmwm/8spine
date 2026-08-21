@@ -115,6 +115,59 @@ function timing(fn, ms) {
   return false;
 }
 
+var BG_KEY = "spine_bootguard";
+var bgArmed = false;
+
+function bgRead() {
+  var s = findStore();
+  if (!s || typeof s.getItem !== "function") return Promise.resolve(null);
+  try {
+    return s.getItem(BG_KEY).then(function (v) {
+      try { return v ? JSON.parse(v) : null; } catch (e) { return null; }
+    }).catch(function () { return null; });
+  } catch (e) {
+    return Promise.resolve(null);
+  }
+}
+
+function bgWrite(obj) {
+  var s = findStore();
+  if (!s || typeof s.setItem !== "function") return;
+  try {
+    s.setItem(BG_KEY, JSON.stringify(obj)).catch(function () {});
+  } catch (e) {}
+}
+
+function armBootGuard() {
+  if (bgArmed) return;
+  bgArmed = true;
+  bgRead().then(function (st0) {
+    var n = (st0 && typeof st0.fails === "number") ? st0.fails : 0;
+    var at = Date.now();
+    bgWrite({ fails: n + 1, at: at });
+    timing(function () {
+      bgRead().then(function (st1) {
+        if (st1 && st1.at === at) {
+          bgWrite({ fails: 0, at: Date.now() });
+        }
+      });
+    }, 8000);
+  });
+}
+
+function bootguardBlocked() {
+  return bgRead().then(function (bg) {
+    if (!bg || typeof bg.fails !== "number" || bg.fails < 3) return false;
+    var last = bg.at || 0;
+    if (Date.now() - last < 86400000) {
+      warn(new Error("bootguard: pausado (fails=" + bg.fails + ")"));
+      return true;
+    }
+    bgWrite({ fails: 0, at: Date.now() });
+    return false;
+  }).catch(function () { return false; });
+}
+
 function shouldRun() {
   var s = findStore();
   if (!s) {
@@ -960,6 +1013,17 @@ function runBundle() {
   }
   return shouldRun().then(function (run) {
     if (!run) return done(0);
+    return bootguardBlocked().then(function (blocked) {
+      if (blocked) return done(0);
+      return runBundleInner();
+    });
+  }).catch(function (err) {
+    warn(err);
+    return done(0);
+  });
+
+  function runBundleInner() {
+    var g = G();
     var stNow = null;
     try {
       var preNow = g.__SPINE_PRE__;
@@ -1025,10 +1089,7 @@ function runBundle() {
     }).catch(function (err) {
       return legacyFetchFlow().then(done);
     });
-  }).catch(function (err) {
-    warn(err);
-    return done(0);
-  });
+  }
 }
 
 function legacyFetchFlow() {
@@ -1066,6 +1127,7 @@ function exec(code) {
     try {
       G().__SPINE_EXEC_TS__ = Date.now();
     } catch (e) {}
+    armBootGuard();
     return true;
   } catch (e) {
     warn(e);
@@ -1117,7 +1179,7 @@ return {
   id: "paras8-liver",
   name: "paras8",
   author: "Livie",
-  version: "0.12.2",
+  version: "0.12.3",
   description: "paras8 loader",
   labels: ["loader"],
   automaticStreaming: false,

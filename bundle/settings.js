@@ -70,7 +70,10 @@
         var wrapped = function (type, props, key) {
           if (st.Orig && type === st.Orig) {
             st.renders++;
-            var W = st.Wrapped || (typeof st.build === "function" ? st.build() : null);
+            var W = st.Wrapped || null;
+            if (!W && typeof st.build === "function") {
+              try { W = st.build(); } catch (eB) { W = null; }
+            }
             if (W && W !== type) type = W;
           }
           if (LYR && LYR.on && type === LYR.orig) {
@@ -497,7 +500,7 @@
           setText("");
           if (a.fetch && track) {
             var q = null;
-            try { q = a.fetch(track); } catch (e) { q = null; }
+            try { q = spineLyricsFetch(track, a.fetch); } catch (e) { q = null; }
             if (q && typeof q.then === "function") {
               q.then(function (lrc) {
                 if (cancelled) return;
@@ -643,8 +646,16 @@
 
     function makeLyricsProxy(LYR) {
       var proxy = function (props) {
-        if (LYR.on && LYR.view) return LYR.view(props);
-        if (LYR.orig) return LYR.orig(props);
+        if (LYR.on && LYR.view) {
+          try {
+            return LYR.view(props);
+          } catch (eL) {
+            try { spine.error("lyrics.view", eL); } catch (e2) {}
+          }
+        }
+        if (LYR.orig) {
+          try { return LYR.orig(props); } catch (e3) {}
+        }
         return null;
       };
       try {
@@ -661,6 +672,135 @@
       return proxy;
     }
 
+    var LYR_FETCH_MEMO = {};
+    function lyrFmtTs(ms) {
+      var m = Math.floor(ms / 60000);
+      var s = Math.floor((ms % 60000) / 1000);
+      var cs = Math.floor((ms % 1000) / 10);
+      return (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s + "." + (cs < 10 ? "0" : "") + cs;
+    }
+    function lyrYrcToLrc(yrc) {
+      try {
+        if (!yrc || typeof yrc !== "string") return "";
+        var out = [];
+        var rows = yrc.split("\n");
+        for (var i = 0; i < rows.length; i++) {
+          var row = rows[i];
+          if (!row || row.charAt(0) !== "[") continue;
+          var head = /^\[(\d+),(\d+)\]/.exec(row);
+          if (!head) continue;
+          var ls = parseInt(head[1], 10);
+          var le = ls + parseInt(head[2], 10);
+          var words = [];
+          var re = /\((\d+),(\d+),\d+\)([^(]*)/g;
+          var wm = null;
+          while ((wm = re.exec(row)) !== null) {
+            if (wm[3]) words.push("<" + lyrFmtTs(parseInt(wm[1], 10)) + ">" + wm[3]);
+          }
+          if (!words.length) continue;
+          out.push("[" + lyrFmtTs(ls) + "]" + words.join("") + "<" + lyrFmtTs(le) + ">");
+        }
+        return out.join("\n");
+      } catch (e) {
+        return "";
+      }
+    }
+    function lyrTrackInfo(track) {
+      var name = "";
+      var artist = "";
+      var album = "";
+      var dur = 0;
+      try {
+        name = (track && (track.name || track.title)) || "";
+        var a = track && track.artist;
+        artist = (typeof a === "string") ? a : ((a && (a.name || a.title)) || "");
+        var al = track && track.album;
+        album = (typeof al === "string") ? al : ((al && (al.title || al.name)) || "");
+        dur = (track && typeof track.duration === "number") ? track.duration : 0;
+        if (dur > 10000) dur = Math.round(dur / 1000);
+      } catch (e) {}
+      return { name: name, artist: artist, album: album, duration: dur };
+    }
+    function lyrFetchJson(url, opts) {
+      return Promise.resolve().then(function () {
+        return fetch(url, opts || {});
+      }).then(function (r) {
+        if (!r || !r.ok) throw new Error("HTTP " + (r && r.status));
+        return r.json();
+      });
+    }
+    function lyrNetease(info) {
+      var q = (info.artist + " " + info.name).trim();
+      if (!q) return Promise.resolve(null);
+      var body = "s=" + encodeURIComponent(q) + "&type=1&limit=10";
+      return lyrFetchJson("https://music.163.com/api/search/get", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body
+      }).then(function (j) {
+        var songs = (j && j.result && j.result.songs) || [];
+        if (!songs.length) return null;
+        var best = songs[0];
+        for (var i = 0; i < songs.length; i++) {
+          var sName = (songs[i] && songs[i].name) || "";
+          if (info.name && sName.toLowerCase() === info.name.toLowerCase()) { best = songs[i]; break; }
+        }
+        return (best && best.id) ? String(best.id) : null;
+      }).then(function (id) {
+        if (!id) return null;
+        var url = "https://music.163.com/api/song/lyric/v1?c=" + encodeURIComponent('[{"id":' + id + ',"v":0}]') + "&yv=0&lv=0&kv=0&tv=0";
+        return lyrFetchJson(url).catch(function () { return null; }).then(function (ly) {
+          if (ly && ly.yrc && ly.yrc.lyric) {
+            var lrc = lyrYrcToLrc(ly.yrc.lyric);
+            if (lrc) return lrc;
+          }
+          if (ly && ly.lrc && ly.lrc.lyric) return ly.lrc.lyric;
+          var url2 = "https://music.163.com/api/song/lyric?id=" + id + "&lv=-1&kv=-1&tv=-1";
+          return lyrFetchJson(url2).then(function (ly2) {
+            return (ly2 && ly2.lrc && ly2.lrc.lyric) || null;
+          }).catch(function () { return null; });
+        });
+      }).catch(function () { return null; });
+    }
+    function lyrLrclib(info) {
+      if (!info.name || !info.artist) return Promise.resolve(null);
+      var qs = "track_name=" + encodeURIComponent(info.name) + "&artist_name=" + encodeURIComponent(info.artist);
+      if (info.album) qs += "&album_name=" + encodeURIComponent(info.album);
+      if (info.duration) qs += "&duration=" + encodeURIComponent(String(Math.round(info.duration)));
+      return lyrFetchJson("https://lrclib.net/api/get?" + qs).then(function (j) {
+        if (!j) return null;
+        return j.syncedLyrics || j.plainLyrics || null;
+      }).catch(function () { return null; });
+    }
+    function spineLyricsFetch(track, appFetch) {
+      var info = lyrTrackInfo(track);
+      var key = (info.artist + "\u0000" + info.name + "\u0000" + info.album).toLowerCase();
+      if (LYR_FETCH_MEMO[key]) return LYR_FETCH_MEMO[key];
+      var p = lyrNetease(info).then(function (lrc) {
+        if (lrc) return lrc;
+        if (typeof appFetch === "function") {
+          return Promise.resolve().then(function () { return appFetch(track); }).then(function (s) {
+            if (s && typeof s === "string" && s.length) return s;
+            return lyrLrclib(info);
+          }).catch(function () { return lyrLrclib(info); });
+        }
+        return lyrLrclib(info);
+      }).catch(function () {
+        if (typeof appFetch === "function") {
+          return Promise.resolve().then(function () { return appFetch(track); }).catch(function () { return null; });
+        }
+        return null;
+      }).then(function (res) {
+        if (!res || typeof res !== "string" || !res.length) {
+          try { delete LYR_FETCH_MEMO[key]; } catch (e2) {}
+          return null;
+        }
+        return res;
+      });
+      LYR_FETCH_MEMO[key] = p;
+      return p;
+    }
+
     function initLyrics(spine) {
       if (LYR.state === "installed" || LYR.state === "watching") {
         return LYR;
@@ -675,12 +815,14 @@
             if (!ex) return;
             var idStr = String(id);
             var d = (ex.__esModule && ex.default !== undefined) ? ex.default : null;
-            var isLyrics = idStr === "2644" ||
-              (typeof d === "function" && (d.name === "LyricsView" || d.displayName === "LyricsView" || d.__spineLyricsProxy === true));
+            var named = typeof d === "function" && (d.name === "LyricsView" || d.displayName === "LyricsView");
+            var isLyrics = named || idStr === "2644" ||
+              (typeof d === "function" && d.__spineLyricsProxy === true);
             if (!isLyrics) return;
-            if (!LYR.orig && typeof d === "function" && d.__spineLyricsProxy !== true) {
+            if (!LYR.orig && named && d.__spineLyricsProxy !== true) {
               LYR.orig = d;
             }
+            if (!LYR.orig) return;
             var V = LYR.view || buildLyricsView(spine);
             if (!V) {
               LYR.state = "no-view";
@@ -877,9 +1019,18 @@
           Ion: Ion
         });
       } catch (e) {}
-      var content = h(RN.View, {
+      var sections = [about, lyricsSection, exportSection, dangerSection].filter(function (x) { return x !== null; });
+      var Scroll = null;
+      try {
+        Scroll = (RN.Animated && typeof RN.Animated.ScrollView === "function") ? RN.Animated.ScrollView :
+          ((typeof RN.ScrollView === "function") ? RN.ScrollView : null);
+      } catch (eS) {}
+      var content = Scroll ? h(Scroll, {
         style: { flex: 1, width: pageWidth || undefined, alignSelf: "center" },
-        children: [about, lyricsSection, exportSection, dangerSection].filter(function (x) { return x !== null; })
+        contentContainerStyle: { paddingBottom: 100 }
+      }, sections) : h(RN.View, {
+        style: { flex: 1, width: pageWidth || undefined, alignSelf: "center" },
+        children: sections
       });
       return h(RN.View, {
         style: [styles.settingsPageContainer, { backgroundColor: theme.background }],
@@ -1627,12 +1778,18 @@
         if (!el || typeof el !== "object") {
           return el;
         }
-        var out = ui.injectIntoSettings(el, props, {
-          title: "paras8",
-          label: "paras8 Settings",
-          key: "spine-row-modules",
-          onPress: function () { onPressRow(props); }
-        });
+        var out = null;
+        try {
+          out = ui.injectIntoSettings(el, props, {
+            title: "paras8",
+            label: "paras8 Settings",
+            key: "spine-row-modules",
+            onPress: function () { onPressRow(props); }
+          });
+        } catch (eInj) {
+          spine.error("settings.inject", eInj);
+          return el;
+        }
         return out;
       };
       Wrapped[TOKEN] = true;
