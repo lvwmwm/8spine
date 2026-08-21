@@ -392,7 +392,16 @@
         switchRow(glow, "Glow effect"),
         switchRow(fade, "Fade mask"),
         switchRow(bg, "Artwork background"),
-        clearRow
+        clearRow,
+        h(RN.View, { key: "lyr-status", style: rowStyle() }, [
+          h(RN.Text, {
+            style: { fontSize: 12, color: theme.secondaryText },
+            children: "engine: " + (LYR ? LYR.state : "?") +
+              " | orig: " + (LYR && LYR.orig ? "ok" : "-") +
+              " | view: " + (LYR && LYR.view ? "ok" : "-") +
+              " | swap: " + ((LYR && LYR.swap) || "-")
+          })
+        ])
       ];
       var group = (L && L.SettingsGroup) ? h(L.SettingsGroup, { theme: theme, children: rows }) : rows;
       return h(RN.View, {
@@ -679,26 +688,120 @@
       var cs = Math.floor((ms % 1000) / 10);
       return (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s + "." + (cs < 10 ? "0" : "") + cs;
     }
-    function lyrYrcToLrc(yrc) {
+    function lyrTtmlMs(v) {
       try {
-        if (!yrc || typeof yrc !== "string") return "";
+        if (v === null || v === undefined) return NaN;
+        var s = String(v).trim();
+        if (s.charAt(s.length - 1) === "s") s = s.slice(0, -1);
+        var parts = s.split(":");
+        var sec = 0;
+        for (var i = 0; i < parts.length; i++) {
+          var f = parseFloat(parts[i]);
+          if (isNaN(f)) return NaN;
+          sec = sec * 60 + f;
+        }
+        return Math.round(sec * 1000);
+      } catch (e) {
+        return NaN;
+      }
+    }
+    function lyrDecEnt(s) {
+      return String(s)
+        .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"")
+        .replace(/&#39;/g, "'").replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+    }
+    function lyrTtmlToLrc(xml) {
+      try {
+        if (!xml || typeof xml !== "string" || xml.indexOf("<") === -1) return "";
         var out = [];
-        var rows = yrc.split("\n");
-        for (var i = 0; i < rows.length; i++) {
-          var row = rows[i];
-          if (!row || row.charAt(0) !== "[") continue;
-          var head = /^\[(\d+),(\d+)\]/.exec(row);
-          if (!head) continue;
-          var ls = parseInt(head[1], 10);
-          var le = ls + parseInt(head[2], 10);
+        var pre = /<p\b[^>]*\bbegin="([^"]+)"[^>]*>([\s\S]*?)<\/p>/g;
+        var m = null;
+        while ((m = pre.exec(xml)) !== null) {
+          var attrs = m[0].slice(0, m[0].indexOf(">") + 1);
+          var ab = /\bbegin="([^"]+)"/.exec(attrs);
+          var ae = /\bend="([^"]+)"/.exec(attrs);
+          if (!ab) continue;
+          var ls = lyrTtmlMs(ab[1]);
+          var le = ae ? lyrTtmlMs(ae[1]) : NaN;
+          if (isNaN(ls)) continue;
+          var body = m[2];
           var words = [];
-          var re = /\((\d+),(\d+),\d+\)([^(]*)/g;
-          var wm = null;
-          while ((wm = re.exec(row)) !== null) {
-            if (wm[3]) words.push("<" + lyrFmtTs(parseInt(wm[1], 10)) + ">" + wm[3]);
+          var spre = /<span\b([^>]*)>([\s\S]*?)<\/span>/g;
+          var sm = null;
+          var hasSpans = false;
+          while ((sm = spre.exec(body)) !== null) {
+            var wab = /\bbegin="([^"]+)"/.exec(sm[1]);
+            var txt = lyrDecEnt(sm[2].replace(/<[^>]*>/g, " ").replace(/\s+/g, " ")).trim();
+            if (!txt) continue;
+            hasSpans = true;
+            var ws = wab ? lyrTtmlMs(wab[1]) : ls;
+            words.push("<" + lyrFmtTs(isNaN(ws) ? ls : ws) + ">" + txt);
           }
-          if (!words.length) continue;
-          out.push("[" + lyrFmtTs(ls) + "]" + words.join("") + "<" + lyrFmtTs(le) + ">");
+          if (!hasSpans) {
+            var lineTxt = lyrDecEnt(body.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ")).trim();
+            if (!lineTxt) continue;
+            out.push("[" + lyrFmtTs(ls) + "]" + lineTxt);
+          } else {
+            out.push("[" + lyrFmtTs(ls) + "]" + words.join("") + (isNaN(le) ? "" : "<" + lyrFmtTs(le) + ">"));
+          }
+        }
+        return out.join("\n");
+      } catch (e) {
+        return "";
+      }
+    }
+    function lyrWordJsonToLrc(j) {
+      try {
+        var lines = null;
+        if (j && Array.isArray(j.lyrics)) lines = j.lyrics;
+        else if (j && j.data && Array.isArray(j.data.lyrics)) lines = j.data.lyrics;
+        else if (Array.isArray(j)) lines = j;
+        if (!lines || !lines.length) return "";
+        var num = function (o, keys) {
+          for (var i = 0; i < keys.length; i++) {
+            if (o && typeof o[keys[i]] === "number") return o[keys[i]];
+          }
+          return NaN;
+        };
+        var out = [];
+        for (var i = 0; i < lines.length; i++) {
+          var ln = lines[i];
+          if (!ln || typeof ln !== "object") continue;
+          var ls = num(ln, ["startTime", "start", "begin", "time"]);
+          if (isNaN(ls)) continue;
+          if (ls % 1 !== 0) ls = Math.round(ls * 1000);
+          var le = num(ln, ["endTime", "end", "finish"]);
+          var ws = null;
+          if (Array.isArray(ln.words)) ws = ln.words;
+          else if (Array.isArray(ln.syllables)) ws = ln.syllables;
+          else if (Array.isArray(ln.data)) ws = ln.data;
+          var parts = [];
+          if (ws) {
+            for (var k = 0; k < ws.length; k++) {
+              var w = ws[k];
+              var wt = null;
+              if (typeof w === "string") wt = w;
+              else if (w && typeof w === "object") {
+                if (typeof w.word === "string") wt = w.word;
+                else if (typeof w.text === "string") wt = w.text;
+                else if (typeof w.token === "string") wt = w.token;
+                else if (typeof w.data === "string") wt = w.data;
+              }
+              if (!wt) continue;
+              var wst = num(w || {}, ["startTime", "start", "begin", "time"]);
+              if (isNaN(wst)) wst = ls;
+              else if (wst % 1 !== 0) wst = Math.round(wst * 1000);
+              parts.push("<" + lyrFmtTs(wst) + ">" + wt);
+            }
+          }
+          if (!parts.length) {
+            var lt = (typeof ln.text === "string" && ln.text) || (typeof ln.line === "string" && ln.line) ||
+              (typeof ln.data === "string" && ln.data) || "";
+            if (!lt) continue;
+            out.push("[" + lyrFmtTs(ls) + "]" + lt);
+          } else {
+            out.push("[" + lyrFmtTs(ls) + "]" + parts.join("") + (isNaN(le) ? "" : "<" + lyrFmtTs(le) + ">"));
+          }
         }
         return out.join("\n");
       } catch (e) {
@@ -710,6 +813,7 @@
       var artist = "";
       var album = "";
       var dur = 0;
+      var isrc = "";
       try {
         name = (track && (track.name || track.title)) || "";
         var a = track && track.artist;
@@ -718,8 +822,9 @@
         album = (typeof al === "string") ? al : ((al && (al.title || al.name)) || "");
         dur = (track && typeof track.duration === "number") ? track.duration : 0;
         if (dur > 10000) dur = Math.round(dur / 1000);
+        isrc = (track && typeof track.isrc === "string" && track.isrc) || "";
       } catch (e) {}
-      return { name: name, artist: artist, album: album, duration: dur };
+      return { name: name, artist: artist, album: album, duration: dur, isrc: isrc };
     }
     function lyrFetchJson(url, opts) {
       return Promise.resolve().then(function () {
@@ -729,37 +834,69 @@
         return r.json();
       });
     }
-    function lyrNetease(info) {
-      var q = (info.artist + " " + info.name).trim();
-      if (!q) return Promise.resolve(null);
-      var body = "s=" + encodeURIComponent(q) + "&type=1&limit=10";
-      return lyrFetchJson("https://music.163.com/api/search/get", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: body
-      }).then(function (j) {
-        var songs = (j && j.result && j.result.songs) || [];
-        if (!songs.length) return null;
-        var best = songs[0];
-        for (var i = 0; i < songs.length; i++) {
-          var sName = (songs[i] && songs[i].name) || "";
-          if (info.name && sName.toLowerCase() === info.name.toLowerCase()) { best = songs[i]; break; }
+    function lyrFetchText(url) {
+      return Promise.resolve().then(function () {
+        return fetch(url, { headers: { "Accept": "application/ttml+xml, application/xml, text/xml, */*" } });
+      }).then(function (r) {
+        if (!r || !r.ok) throw new Error("HTTP " + (r && r.status));
+        return r.text();
+      });
+    }
+    function lyrBini(info) {
+      var qs = [];
+      if (info.isrc) qs.push("isrc=" + encodeURIComponent(info.isrc));
+      if (info.name) qs.push("track=" + encodeURIComponent(info.name));
+      if (info.artist) qs.push("artist=" + encodeURIComponent(info.artist));
+      if (info.album) qs.push("album=" + encodeURIComponent(info.album));
+      if (info.duration) qs.push("duration=" + encodeURIComponent(String(Math.round(info.duration))));
+      if (!qs.length) return Promise.resolve(null);
+      return lyrFetchJson("https://lyrics-api.binimum.org/?" + qs.join("&")).then(function (j) {
+        var results = (j && j.results) || [];
+        var u = null;
+        for (var i = 0; i < results.length; i++) {
+          if (results[i] && results[i].lyricsUrl) { u = results[i].lyricsUrl; break; }
         }
-        return (best && best.id) ? String(best.id) : null;
-      }).then(function (id) {
-        if (!id) return null;
-        var url = "https://music.163.com/api/song/lyric/v1?c=" + encodeURIComponent('[{"id":' + id + ',"v":0}]') + "&yv=0&lv=0&kv=0&tv=0";
-        return lyrFetchJson(url).catch(function () { return null; }).then(function (ly) {
-          if (ly && ly.yrc && ly.yrc.lyric) {
-            var lrc = lyrYrcToLrc(ly.yrc.lyric);
-            if (lrc) return lrc;
-          }
-          if (ly && ly.lrc && ly.lrc.lyric) return ly.lrc.lyric;
-          var url2 = "https://music.163.com/api/song/lyric?id=" + id + "&lv=-1&kv=-1&tv=-1";
-          return lyrFetchJson(url2).then(function (ly2) {
-            return (ly2 && ly2.lrc && ly2.lrc.lyric) || null;
-          }).catch(function () { return null; });
-        });
+        if (!u) return null;
+        return lyrFetchText(u).then(function (ttml) {
+          var lrc = lyrTtmlToLrc(ttml);
+          return lrc || null;
+        }).catch(function () { return null; });
+      }).catch(function () { return null; });
+    }
+    function lyrUnison(info) {
+      if (!info.name) return Promise.resolve(null);
+      var qs = "song=" + encodeURIComponent(info.name) + "&artist=" + encodeURIComponent(info.artist || "");
+      if (info.album) qs += "&album=" + encodeURIComponent(info.album);
+      if (info.duration) qs += "&duration=" + encodeURIComponent(String(Math.round(info.duration)));
+      return lyrFetchJson("https://unison.boidu.dev/lyrics?" + qs).then(function (j) {
+        var lrc = lyrWordJsonToLrc(j);
+        return lrc || null;
+      }).catch(function () { return null; });
+    }
+    function lyrLyricsPlus(info) {
+      var hosts = ["https://lyricsplus.binimum.org", "https://lyricsplus.prjktla.workers.dev",
+        "https://lyrics-plus-backend.vercel.app", "https://lyricsplus-seven.vercel.app"];
+      var qs = "title=" + encodeURIComponent(info.name || "") + "&artist=" + encodeURIComponent(info.artist || "");
+      if (info.isrc) qs += "&isrc=" + encodeURIComponent(info.isrc);
+      if (info.album) qs += "&album=" + encodeURIComponent(info.album);
+      if (info.duration) qs += "&duration=" + encodeURIComponent(String(Math.round(info.duration)));
+      var tryHost = function (idx) {
+        if (idx >= hosts.length) return Promise.resolve(null);
+        return lyrFetchJson(hosts[idx] + "/v2/lyrics/get?" + qs).then(function (j) {
+          var lrc = lyrWordJsonToLrc(j) || lyrWordJsonToLrc(j && j.lyrics);
+          return lrc || null;
+        }).catch(function () { return tryHost(idx + 1); });
+      };
+      return tryHost(0);
+    }
+    function lyrGenius(info) {
+      if (!info.name) return Promise.resolve(null);
+      var url = "https://fetch-genius.samidy.workers.dev/?title=" + encodeURIComponent(info.name) +
+        "&artist=" + encodeURIComponent(info.artist || "");
+      return lyrFetchJson(url).then(function (j) {
+        var t = j && (j.lyrics || j.plainLyrics || j.text);
+        if (typeof t === "string" && t.length) return t;
+        return null;
       }).catch(function () { return null; });
     }
     function lyrLrclib(info) {
@@ -776,25 +913,36 @@
       var info = lyrTrackInfo(track);
       var key = (info.artist + "\u0000" + info.name + "\u0000" + info.album).toLowerCase();
       if (LYR_FETCH_MEMO[key]) return LYR_FETCH_MEMO[key];
-      var p = lyrNetease(info).then(function (lrc) {
-        if (lrc) return lrc;
+      var appFallback = function () {
         if (typeof appFetch === "function") {
           return Promise.resolve().then(function () { return appFetch(track); }).then(function (s) {
             if (s && typeof s === "string" && s.length) return s;
-            return lyrLrclib(info);
-          }).catch(function () { return lyrLrclib(info); });
+            return null;
+          }).catch(function () { return null; });
         }
-        return lyrLrclib(info);
-      }).catch(function () {
-        if (typeof appFetch === "function") {
-          return Promise.resolve().then(function () { return appFetch(track); }).catch(function () { return null; });
-        }
-        return null;
-      }).then(function (res) {
+        return Promise.resolve(null);
+      };
+      var p = lyrBini(info).then(function (lrc) {
+        if (lrc) return lrc;
+        return lyrLrclib(info).then(function (r2) {
+          if (r2) return r2;
+          return lyrUnison(info).then(function (r3) {
+            if (r3) return r3;
+            return lyrLyricsPlus(info).then(function (r4) {
+              if (r4) return r4;
+              return lyrGenius(info).then(function (r5) {
+                if (r5) return r5;
+                return appFallback();
+              });
+            });
+          });
+        });
+      }).catch(appFallback).then(function (res) {
         if (!res || typeof res !== "string" || !res.length) {
           try { delete LYR_FETCH_MEMO[key]; } catch (e2) {}
           return null;
         }
+        LYR.lastSource = res.indexOf("<") === 0 ? "?" : (/\[\d{1,3}:\d{2}/.test(res) ? (/<\d{2}:\d{2}\.\d{2,3}>/.test(res) ? "word-synced" : "line-synced") : "plain");
         return res;
       });
       LYR_FETCH_MEMO[key] = p;
@@ -819,7 +967,7 @@
             var isLyrics = named || idStr === "2644" ||
               (typeof d === "function" && d.__spineLyricsProxy === true);
             if (!isLyrics) return;
-            if (!LYR.orig && named && d.__spineLyricsProxy !== true) {
+            if (!LYR.orig && typeof d === "function" && d.__spineLyricsProxy !== true) {
               LYR.orig = d;
             }
             if (!LYR.orig) return;
@@ -830,7 +978,8 @@
             }
             LYR.view = V;
             if (LYR.orig && ex.__esModule && ex.default === LYR.orig) {
-              trySetDefault(ex, makeLyricsProxy(LYR));
+              var sw = trySetDefault(ex, makeLyricsProxy(LYR));
+              LYR.swap = sw && sw.ok ? "ok" : "fail:" + ((sw && sw.reason) || "?");
             }
             LYR.state = "installed";
           } catch (e) {}

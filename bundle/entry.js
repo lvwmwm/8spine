@@ -8,7 +8,7 @@
   }
 
   var SPINE = (g.SPINE = g.SPINE || {});
-  SPINE.version = "0.17.9";
+  SPINE.version = "0.17.10";
   SPINE.booted = false;
   SPINE.warmupEnabled = true;
   SPINE.app = { bundleTime: g.__BUNDLE_START_TIME__ || 0 };
