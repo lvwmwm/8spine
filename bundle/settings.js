@@ -12,13 +12,13 @@
     var LYR = null;
     try {
       LYR = ((g.__SPINE_PRE__ = g.__SPINE_PRE__ || {})).lyrics = ((g.__SPINE_PRE__).lyrics || {
-        on: true,
+        on: false,
         orig: null,
         view: null,
         state: "idle"
       });
     } catch (e) {
-      LYR = { on: true, orig: null, view: null, state: "idle" };
+      LYR = { on: false, orig: null, view: null, state: "idle" };
     }
 
     var JSX_MATCH = function (exps) {
@@ -357,7 +357,7 @@
         return { key: key, value: s[0], set: s[1] };
       }
 
-      var enabled = mk("lyricsView", true);
+      var enabled = mk("lyricsView", false);
       var glow = mk("lyricsGlow", true);
       var fade = mk("lyricsFade", true);
       var bg = mk("lyricsBg", true);
@@ -492,7 +492,7 @@
       ].filter(function (x) { return x !== null; }));
 
       var rows = [
-        switchRow(enabled, "Custom lyrics view"),
+        switchRow(enabled, "Pretty lyrics"),
         switchRow(glow, "Glow effect"),
         switchRow(fade, "Fade mask"),
         switchRow(bg, "Artwork background"),
@@ -500,7 +500,8 @@
         h(RN.View, { key: "lyr-status", style: rowStyle() }, [
           h(RN.Text, {
             style: { fontSize: 12, color: theme.secondaryText },
-            children: "engine: " + (LYR ? LYR.state : "?") +
+            children: "on: " + (LYR && LYR.on ? "yes" : "no (default)") +
+              " | engine: " + (LYR ? LYR.state : "?") +
               " | orig: " + (LYR && LYR.orig ? "ok" : "-") +
               " | view: " + (LYR && LYR.view ? "ok" : "-") +
               " | swap: " + ((LYR && LYR.swap) || "-") +
@@ -556,23 +557,31 @@
       var LINE_H = 54;
       var Mv = null;
       var Lg = null;
-      try {
-        if (LYR.mv !== undefined) {
-          Mv = LYR.mv;
-          Lg = LYR.lg;
-        } else {
-          try {
-            var fMv = spine.metro.find(spine.metro.byName("MaskedView"));
-            if (fMv) Mv = interop(fMv.module);
-          } catch (eM1) {}
-          try {
-            var fLg = spine.metro.find(spine.metro.byName("LinearGradient"));
-            if (fLg) Lg = interop(fLg.module);
-          } catch (eM2) {}
-          LYR.mv = Mv || null;
-          LYR.lg = Lg || null;
-        }
-      } catch (eM3) {}
+        try {
+          if (LYR.mv !== undefined) {
+            Mv = LYR.mv;
+            Lg = LYR.lg;
+          } else {
+            try {
+              var fMv = spine.metro.find(spine.metro.byName("MaskedView"));
+              if (fMv) Mv = interop(fMv.module);
+            } catch (eM1) {}
+            try {
+              var fLg = spine.metro.find(function (ex, meta) {
+                return meta && meta.id === "1945" && ex && (ex.LinearGradient || (ex.__esModule && ex.default));
+              });
+              if (fLg) Lg = fLg.module.LinearGradient || ((fLg.module.__esModule && fLg.module.default) || null);
+            } catch (eM2) {}
+            if (!Lg) {
+              try {
+                var fLg2 = spine.metro.find(spine.metro.byName("LinearGradient"));
+                if (fLg2) Lg = interop(fLg2.module);
+              } catch (eM4) {}
+            }
+            LYR.mv = Mv || null;
+            LYR.lg = Lg || null;
+          }
+        } catch (eM3) {}
       var Animated = null;
       try { Animated = (RN.Animated && typeof RN.Animated.timing === "function") ? RN.Animated : null; } catch (eA0) {}
 
@@ -1244,7 +1253,7 @@
         return LYR;
       }
       try {
-        LYR.on = spine.prefs.get("lyricsView", true) !== false;
+        LYR.on = spine.prefs.get("lyricsView", false) === true;
       } catch (e) {}
       function processLyricsModule(idStr, ex) {
         try {
