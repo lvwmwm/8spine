@@ -9,7 +9,7 @@
   }
 
   var SPINE = (g.SPINE = g.SPINE || {});
-  SPINE.version = "0.18.0";
+  SPINE.version = "0.18.1";
   SPINE.booted = false;
   SPINE.warmupEnabled = true;
   SPINE.app = { bundleTime: g.__BUNDLE_START_TIME__ || 0 };
@@ -4079,7 +4079,10 @@
               " | view: " + (LYR && LYR.view ? "ok" : "-") +
               " | swap: " + ((LYR && LYR.swap) || "-") +
               " | via: " + ((LYR && LYR.via) || "-") +
-              " | src: " + ((LYR && LYR.lastSource) || "-")
+              " | src: " + ((LYR && LYR.lastSource) || "-") +
+              " | t:" + ((LYR && LYR.lastTime) || 0) +
+              " lines:" + ((LYR && LYR.lastLines) || 0) +
+              " idx:" + ((LYR && LYR.lastIdx !== undefined) ? LYR.lastIdx : "-")
           })
         ]),
         h(RN.View, { key: "lyr-diag", style: rowStyle() }, [
@@ -4220,7 +4223,9 @@
         try {
           trackKey = String(track.id || track.key || track.isrc || track.uri || "");
         } catch (e) {}
-        var currentTime = (typeof p.currentTime === "number") ? p.currentTime : 0;
+        var currentTime = (typeof p.currentTime === "number") ? p.currentTime :
+          (typeof p.position === "number") ? p.position :
+          (typeof p.progress === "number") ? p.progress : 0;
         var textColor = p.textColor || "#ffffff";
         var imageUrl = p.imageUrl || null;
         var pf = prefs();
@@ -4281,6 +4286,12 @@
           var tm = lines[i] && lines[i].time;
           if (typeof tm === "number" && tm <= currentTime + 0.15) idx = i;
         }
+        try {
+          LYR.lastTime = Math.round(currentTime * 10) / 10;
+          LYR.lastLines = lines.length;
+          LYR.lastIdx = idx;
+          LYR.lastProps = Object.keys(p).join(",").slice(0, 120);
+        } catch (eD3) {}
 
         useEffect(function () {
           if (idx < 0 || !scroll.current || idx === lastIdx.current) return;
@@ -4295,10 +4306,10 @@
 
         var PAD = Math.max(90, Math.round(boxH * 0.32));
         var children = [];
-        children.push(h(View, { key: "lyr-bg", style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(12,12,18,0.92)" } }));
+        children.push(h(View, { key: "lyr-bg", style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(8,8,13,0.97)" } }));
         if (pf.bg && imageUrl && Image) {
-          children.push(h(Image, { key: "lyr-art", source: { uri: imageUrl }, resizeMode: "cover", style: { position: "absolute", top: -20, left: -20, right: -20, bottom: -20, opacity: 0.85 } }));
-          children.push(h(View, { key: "lyr-shade", style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(8,8,14,0.55)" } }));
+          children.push(h(Image, { key: "lyr-art", source: { uri: imageUrl }, resizeMode: "cover", style: { position: "absolute", top: -20, left: -20, right: -20, bottom: -20, opacity: 0.7 } }));
+          children.push(h(View, { key: "lyr-shade", style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(6,6,10,0.72)" } }));
         }
         if (pf.fade) {
           children.push(h(View, { key: "lyr-fade-t", pointerEvents: "none", style: { position: "absolute", top: 0, left: 0, right: 0, height: Math.round(boxH * 0.16), backgroundColor: "rgba(10,10,16,0.5)" } }));
