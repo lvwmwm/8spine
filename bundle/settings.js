@@ -554,6 +554,27 @@
       if (!Text || !View) return null;
 
       var LINE_H = 54;
+      var Mv = null;
+      var Lg = null;
+      try {
+        if (LYR.mv !== undefined) {
+          Mv = LYR.mv;
+          Lg = LYR.lg;
+        } else {
+          try {
+            var fMv = spine.metro.find(spine.metro.byName("MaskedView"));
+            if (fMv) Mv = interop(fMv.module);
+          } catch (eM1) {}
+          try {
+            var fLg = spine.metro.find(spine.metro.byName("LinearGradient"));
+            if (fLg) Lg = interop(fLg.module);
+          } catch (eM2) {}
+          LYR.mv = Mv || null;
+          LYR.lg = Lg || null;
+        }
+      } catch (eM3) {}
+      var Animated = null;
+      try { Animated = (RN.Animated && typeof RN.Animated.timing === "function") ? RN.Animated : null; } catch (eA0) {}
 
       function api() {
         var out = { fetch: null, parse: null };
@@ -671,6 +692,10 @@
         var setBoxH = boxState[1];
         var scroll = useRef(null);
         var lastIdx = useRef(-1);
+        var scaleAnim = useRef(null);
+        if (!scaleAnim.current && Animated) {
+          try { scaleAnim.current = new Animated.Value(1); } catch (eAn0) {}
+        }
         var progHookState = useState(function () {
           try {
             var found = null;
@@ -752,6 +777,14 @@
           } catch (e) {}
         }, [idx, boxH]);
 
+        useEffect(function () {
+          if (!scaleAnim.current || idx < 0) return;
+          try {
+            scaleAnim.current.setValue(0.94);
+            Animated.spring(scaleAnim.current, { toValue: 1, friction: 8, tension: 140, useNativeDriver: true }).start();
+          } catch (eAn2) {}
+        }, [idx]);
+
         var PAD = Math.max(90, Math.round(boxH * 0.32));
         var children = [];
         var KBg = (pf.bg && LYR.kawarp) || null;
@@ -769,9 +802,9 @@
         } else {
           children.push(h(View, { key: "lyr-bg", style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(8,8,13,0.97)" } }));
         }
-        if (pf.fade) {
-          children.push(h(View, { key: "lyr-fade-t", pointerEvents: "none", style: { position: "absolute", top: 0, left: 0, right: 0, height: Math.round(boxH * 0.16), backgroundColor: "rgba(10,10,16,0.5)" } }));
-          children.push(h(View, { key: "lyr-fade-b", pointerEvents: "none", style: { position: "absolute", bottom: 0, left: 0, right: 0, height: Math.round(boxH * 0.14), backgroundColor: "rgba(10,10,16,0.5)" } }));
+        if (pf.fade && !(Mv && Lg)) {
+          children.push(h(View, { key: "lyr-fade-t", pointerEvents: "none", style: { position: "absolute", top: 0, left: 0, right: 0, height: Math.round(boxH * 0.12), backgroundColor: "rgba(10,10,16,0.45)" } }));
+          children.push(h(View, { key: "lyr-fade-b", pointerEvents: "none", style: { position: "absolute", bottom: 0, left: 0, right: 0, height: Math.round(boxH * 0.1), backgroundColor: "rgba(10,10,16,0.45)" } }));
         }
 
         var lineEls = [];
@@ -782,18 +815,20 @@
             var hasWords = ln.words && ln.words.length > 0;
             if (!txt && !hasWords) continue;
             var act = j === idx;
+            var isAdlib = txt.charAt(0) === "(" || txt.charAt(0) === "[";
             var lineStyle = {
-              fontSize: act ? 31 : 27,
+              fontSize: isAdlib ? (act ? 24 : 21) : (act ? 31 : 26),
               lineHeight: LINE_H,
-              textAlign: "left",
+              textAlign: isAdlib ? "right" : "left",
               color: textColor,
-              opacity: act ? 1 : 0.34,
+              opacity: act ? (isAdlib ? 0.9 : 1) : (isAdlib ? 0.22 : 0.34),
               fontWeight: act ? "800" : "700",
-              paddingHorizontal: 30
+              paddingHorizontal: 30,
+              marginLeft: isAdlib ? 60 : 0
             };
             if (act) {
-              lineStyle.textShadowColor = "rgba(255,255,255,0.28)";
-              lineStyle.textShadowRadius = 10;
+              lineStyle.textShadowColor = "rgba(255,255,255,0.35)";
+              lineStyle.textShadowRadius = 14;
               lineStyle.textShadowOffset = { width: 0, height: 0 };
             }
             var kids = null;
@@ -804,12 +839,12 @@
                 var sung = currentTime >= wv.t;
                 kids.push(h(Text, {
                   key: "w" + wi,
-                  style: { color: sung ? textColor : "rgba(255,255,255,0.38)" },
+                  style: { color: sung ? textColor : "rgba(255,255,255,0.35)" },
                   children: wv.w
                 }));
               }
             }
-            lineEls.push(h(Text, {
+            var lineText = h(Text, {
               key: "lyr-line-" + j,
               style: lineStyle,
               suppressHighlighting: true,
@@ -818,7 +853,15 @@
                   try { p.onSeek(Math.max(0, lt - 0.25)); } catch (eS) {}
                 };
               })(ln.time) : undefined
-            }, kids || txt));
+            }, kids || txt);
+            if (act && scaleAnim.current) {
+              lineEls.push(h(Animated.View, {
+                key: "lyr-act-" + j,
+                style: { width: "100%", transform: [{ scale: scaleAnim.current }] }
+              }, lineText));
+            } else {
+              lineEls.push(lineText);
+            }
           }
         } else if (loading) {
           lineEls.push(h(Text, { key: "lyr-loading", style: { fontSize: 16, color: textColor, opacity: 0.55, textAlign: "center" }, children: "Carregando lyrics\u2026" }));
@@ -845,7 +888,18 @@
         } else {
           scrollEl = h(View, { style: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 24 } }, lineEls);
         }
-        children.push(scrollEl);
+        var lyricsLayer = scrollEl;
+        if (Mv && Lg) {
+          lyricsLayer = h(Mv, {
+            key: "lyr-mask",
+            maskElement: h(Lg, {
+              colors: ["transparent", "black", "black", "transparent"],
+              locations: [0, 0.12, 0.84, 1],
+              style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }
+            })
+          }, scrollEl);
+        }
+        children.push(lyricsLayer);
         return h(View, { style: { flex: 1, overflow: "hidden" } }, children);
       }
 
@@ -1123,40 +1177,62 @@
         return j.syncedLyrics || j.plainLyrics || null;
       }).catch(function () { return null; });
     }
+    function lyrAppWord(track, appFetch) {
+      return Promise.resolve().then(function () {
+        if (typeof appFetch !== "function") return null;
+        var api79 = null;
+        spine.metro.find(function (ex) {
+          if (ex && typeof ex.fetchAndCacheLyrics === "function" && typeof ex.setLyricsProviderPreference === "function") {
+            api79 = ex;
+            return true;
+          }
+          return false;
+        });
+        if (!api79) return appFetch(track);
+        var prev = null;
+        try { prev = api79.getLyricsProviderPreference ? api79.getLyricsProviderPreference() : null; } catch (e0) {}
+        try { api79.setLyricsProviderPreference("8spine"); } catch (e1) { return appFetch(track); }
+        return Promise.resolve().then(function () { return api79.fetchAndCacheLyrics(track); }).then(function (r) {
+          try { api79.setLyricsProviderPreference(prev || "lrclib"); } catch (e2) {}
+          return (r && typeof r === "string" && r.length) ? r : null;
+        }).catch(function () {
+          try { api79.setLyricsProviderPreference(prev || "lrclib"); } catch (e3) {}
+          return null;
+        });
+      }).catch(function () { return null; });
+    }
     function spineLyricsFetch(track, appFetch) {
       var info = lyrTrackInfo(track);
       var key = (info.artist + "\u0000" + info.name + "\u0000" + info.album).toLowerCase();
       if (LYR_FETCH_MEMO[key]) return LYR_FETCH_MEMO[key];
-      var appFallback = function () {
-        if (typeof appFetch === "function") {
-          return Promise.resolve().then(function () { return appFetch(track); }).then(function (s) {
-            if (s && typeof s === "string" && s.length) return s;
-            return null;
-          }).catch(function () { return null; });
-        }
-        return Promise.resolve(null);
-      };
-      var p = lyrBini(info).then(function (lrc) {
-        if (lrc) return lrc;
-        return lyrLrclib(info).then(function (r2) {
-          if (r2) return r2;
+      var isWord = function (s) { return !!(s && /<\d{1,3}:\d{2}/.test(s)); };
+      var p = lyrBini(info).then(function (r1) {
+        if (r1) { LYR.lastProv = "bini"; if (isWord(r1)) return r1; }
+        return lyrLyricsPlus(info).then(function (r2) {
+          if (r2) { LYR.lastProv = LYR.lastProv || "lyricsplus"; if (isWord(r2)) { LYR.lastProv = "lyricsplus"; return r2; } }
           return lyrUnison(info).then(function (r3) {
-            if (r3) return r3;
-            return lyrLyricsPlus(info).then(function (r4) {
-              if (r4) return r4;
-              return lyrGenius(info).then(function (r5) {
-                if (r5) return r5;
-                return appFallback();
+            if (r3) { LYR.lastProv = LYR.lastProv || "unison"; if (isWord(r3)) { LYR.lastProv = "unison"; return r3; } }
+            return lyrAppWord(track, appFetch).then(function (r4) {
+              if (r4) { LYR.lastProv = LYR.lastProv || "app"; if (isWord(r4)) { LYR.lastProv = "mxm"; return r4; } }
+              var best = r1 || r2 || r3 || r4 || null;
+              if (best) return best;
+              return lyrLrclib(info).then(function (r5) {
+                if (r5) { LYR.lastProv = "lrclib"; return r5; }
+                return lyrGenius(info).then(function (r6) {
+                  if (r6) LYR.lastProv = "genius";
+                  return r6;
+                });
               });
             });
           });
         });
-      }).catch(appFallback).then(function (res) {
+      }).catch(function () { return null; }).then(function (res) {
         if (!res || typeof res !== "string" || !res.length) {
           try { delete LYR_FETCH_MEMO[key]; } catch (e2) {}
           return null;
         }
-        LYR.lastSource = res.indexOf("<") === 0 ? "?" : (/\[\d{1,3}:\d{2}/.test(res) ? (/<\d{2}:\d{2}\.\d{2,3}>/.test(res) ? "word-synced" : "line-synced") : "plain");
+        var fmt = /\[\d{1,3}:\d{2}/.test(res) ? (/<\d{1,3}:\d{2}/.test(res) ? "word-synced" : "line-synced") : "plain";
+        LYR.lastSource = ((LYR.lastProv || "?") + " " + fmt);
         return res;
       });
       LYR_FETCH_MEMO[key] = p;
