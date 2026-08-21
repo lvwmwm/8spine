@@ -504,7 +504,8 @@
               " | orig: " + (LYR && LYR.orig ? "ok" : "-") +
               " | view: " + (LYR && LYR.view ? "ok" : "-") +
               " | swap: " + ((LYR && LYR.swap) || "-") +
-              " | via: " + ((LYR && LYR.via) || "-")
+              " | via: " + ((LYR && LYR.via) || "-") +
+              " | src: " + ((LYR && LYR.lastSource) || "-")
           })
         ]),
         h(RN.View, { key: "lyr-diag", style: rowStyle() }, [
@@ -526,7 +527,6 @@
         ]
       });
     }
-
     function buildLyricsView(spine) {
       var R = ui.react();
       if (!R || typeof R.useState !== "function" || typeof R.useEffect !== "function" || typeof R.useRef !== "function") {
@@ -538,10 +538,8 @@
       var useState = R.useState;
       var useEffect = R.useEffect;
       var useRef = R.useRef;
-      var Animated = null;
-      try { Animated = RN.Animated || null; } catch (e) {}
       var ScrollView = null;
-      try { ScrollView = (typeof RN.ScrollView === "function") ? RN.ScrollView : null; } catch (e) {}
+      try { ScrollView = (RN.Animated && typeof RN.Animated.ScrollView === "function") ? RN.Animated.ScrollView : ((typeof RN.ScrollView === "function") ? RN.ScrollView : null); } catch (e) {}
       var Image = null;
       try { Image = (typeof RN.Image === "function") ? RN.Image : null; } catch (e) {}
       var Text = null;
@@ -550,8 +548,7 @@
       try { View = (typeof RN.View === "function") ? RN.View : null; } catch (e) {}
       if (!Text || !View) return null;
 
-      var LINE_H = 44;
-      var PAD = 140;
+      var LINE_H = 54;
 
       function api() {
         var out = { fetch: null, parse: null };
@@ -570,14 +567,73 @@
       }
 
       function prefs() {
-        var out = { glow: true, fade: true, bg: true };
+        var out = { fade: true, bg: true };
         try {
           var p = spine.prefs;
           if (p && typeof p.get === "function") {
-            if (p.get("lyricsGlow", true) === false) out.glow = false;
             if (p.get("lyricsFade", true) === false) out.fade = false;
             if (p.get("lyricsBg", true) === false) out.bg = false;
           }
+        } catch (e) {}
+        return out;
+      }
+
+      function lyrParseStamp(mm, ss, ff) {
+        var m = parseInt(mm, 10) || 0;
+        var s = parseInt(ss, 10) || 0;
+        var frac = 0;
+        if (ff) {
+          var fstr = String(ff);
+          while (fstr.length < 3) fstr += "0";
+          frac = parseInt(fstr, 10) || 0;
+        }
+        return m * 60 + s + frac / 1000;
+      }
+
+      function lyrParseLrc(lrc) {
+        var out = [];
+        try {
+          if (!lrc || typeof lrc !== "string") return out;
+          var rows = lrc.split(/\r?\n/);
+          var reHead = /\[(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?\]/g;
+          var reWord = /<(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?>/g;
+          for (var r = 0; r < rows.length; r++) {
+            var row = rows[r];
+            if (!row) continue;
+            reHead.lastIndex = 0;
+            var stamps = [];
+            var hm = null;
+            var lastEnd = 0;
+            while ((hm = reHead.exec(row)) !== null) {
+              stamps.push(lyrParseStamp(hm[1], hm[2], hm[3]));
+              lastEnd = reHead.lastIndex;
+            }
+            if (!stamps.length) continue;
+            var body = row.slice(lastEnd);
+            var words = [];
+            reWord.lastIndex = 0;
+            var wm = null;
+            var wT = 0;
+            var wStart = -1;
+            while ((wm = reWord.exec(body)) !== null) {
+              if (wStart >= 0) {
+                var seg = body.slice(wStart, wm.index).replace(/\s+/g, " ");
+                if (seg.trim()) words.push({ t: wT, w: seg });
+              }
+              wT = lyrParseStamp(wm[1], wm[2], wm[3]);
+              wStart = reWord.lastIndex;
+            }
+            if (wStart >= 0) {
+              var seg2 = body.slice(wStart).replace(/<[^>]*>/g, "").replace(/\s+/g, " ");
+              if (seg2.trim()) words.push({ t: wT, w: seg2 });
+            }
+            var clean = body.replace(reWord, "").replace(/\s+/g, " ").trim();
+            if (!clean && !words.length) continue;
+            for (var si = 0; si < stamps.length; si++) {
+              out.push({ time: stamps[si], text: clean, words: words });
+            }
+          }
+          out.sort(function (a, b) { return a.time - b.time; });
         } catch (e) {}
         return out;
       }
@@ -592,7 +648,6 @@
         } catch (e) {}
         var currentTime = (typeof p.currentTime === "number") ? p.currentTime : 0;
         var textColor = p.textColor || "#ffffff";
-        var showBackground = p.showBackground === true;
         var imageUrl = p.imageUrl || null;
         var pf = prefs();
 
@@ -610,7 +665,6 @@
         var setBoxH = boxState[1];
         var scroll = useRef(null);
         var lastIdx = useRef(-1);
-        var glowAnim = useRef(null);
 
         useEffect(function () {
           var cancelled = false;
@@ -631,14 +685,8 @@
                   return;
                 }
                 setText(lrc);
-                if (/\[\d{1,3}:\d{2}/.test(lrc) && a.parse) {
-                  try {
-                    var arr = a.parse(lrc);
-                    setLines(Array.isArray(arr) ? arr : []);
-                  } catch (e) { setLines([]); }
-                } else {
-                  setLines([]);
-                }
+                var parsed = lyrParseLrc(lrc);
+                setLines(parsed);
               }, function () {
                 if (cancelled) return;
                 setLoading(false);
@@ -654,26 +702,10 @@
           return function () { cancelled = true; };
         }, [trackKey]);
 
-        useEffect(function () {
-          if (!pf.glow || !Animated || glowAnim.current) return;
-          try {
-            var v = new Animated.Value(0.35);
-            glowAnim.current = v;
-            var loop = Animated.loop(Animated.sequence([
-              Animated.timing(v, { toValue: 0.8, duration: 1100, useNativeDriver: true }),
-              Animated.timing(v, { toValue: 0.35, duration: 1100, useNativeDriver: true })
-            ]));
-            loop.start();
-            return function () {
-              try { loop.stop(); } catch (e) {}
-            };
-          } catch (e) {}
-        }, []);
-
         var idx = -1;
         for (var i = 0; i < lines.length; i++) {
           var tm = lines[i] && lines[i].time;
-          if (typeof tm === "number" && tm <= currentTime) idx = i;
+          if (typeof tm === "number" && tm <= currentTime + 0.15) idx = i;
         }
 
         useEffect(function () {
@@ -687,55 +719,68 @@
           } catch (e) {}
         }, [idx, boxH]);
 
+        var PAD = Math.max(90, Math.round(boxH * 0.32));
         var children = [];
-        var bgColor = "rgba(14,14,22,0.92)";
-        if (p.backgroundColor && p.backgroundColor !== "transparent") {
-          bgColor = p.backgroundColor;
-        }
-        children.push(h(View, { key: "lyr-bg", style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: bgColor } }));
-        if (showBackground && imageUrl && Image && pf.bg) {
-          children.push(h(Image, { key: "lyr-art", source: { uri: imageUrl }, resizeMode: "cover", style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, opacity: 0.16 } }));
-          children.push(h(View, { key: "lyr-art-shade", style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(8,8,16,0.55)" } }));
-        }
-        if (pf.glow && Animated && glowAnim.current && idx >= 0) {
-          children.push(h(Animated.View, {
-            key: "lyr-glow",
-            pointerEvents: "none",
-            style: { position: "absolute", left: "10%", right: "10%", top: Math.max(20, boxH / 2 - 62), height: 124, borderRadius: 62, backgroundColor: "rgba(255,255,255,0.10)", opacity: glowAnim.current }
-          }));
+        children.push(h(View, { key: "lyr-bg", style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(12,12,18,0.92)" } }));
+        if (pf.bg && imageUrl && Image) {
+          children.push(h(Image, { key: "lyr-art", source: { uri: imageUrl }, resizeMode: "cover", style: { position: "absolute", top: -20, left: -20, right: -20, bottom: -20, opacity: 0.85 } }));
+          children.push(h(View, { key: "lyr-shade", style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(8,8,14,0.55)" } }));
         }
         if (pf.fade) {
-          children.push(h(View, { key: "lyr-fade-t", pointerEvents: "none", style: { position: "absolute", top: 0, left: 0, right: 0, height: 80, backgroundColor: "rgba(14,14,22,0.66)" } }));
-          children.push(h(View, { key: "lyr-fade-b", pointerEvents: "none", style: { position: "absolute", bottom: 0, left: 0, right: 0, height: 80, backgroundColor: "rgba(14,14,22,0.66)" } }));
+          children.push(h(View, { key: "lyr-fade-t", pointerEvents: "none", style: { position: "absolute", top: 0, left: 0, right: 0, height: Math.round(boxH * 0.16), backgroundColor: "rgba(10,10,16,0.5)" } }));
+          children.push(h(View, { key: "lyr-fade-b", pointerEvents: "none", style: { position: "absolute", bottom: 0, left: 0, right: 0, height: Math.round(boxH * 0.14), backgroundColor: "rgba(10,10,16,0.5)" } }));
         }
 
         var lineEls = [];
         if (lines.length) {
           for (var j = 0; j < lines.length; j++) {
-            var line = lines[j];
-            var txt = (line && line.text) ? line.text : "";
-            if (!txt) continue;
-            var active = j === idx;
+            var ln = lines[j];
+            var txt = ln.text || "";
+            var hasWords = ln.words && ln.words.length > 0;
+            if (!txt && !hasWords) continue;
+            var act = j === idx;
             var lineStyle = {
-              fontSize: active ? 26 : 17,
+              fontSize: act ? 31 : 27,
               lineHeight: LINE_H,
-              textAlign: "center",
+              textAlign: "left",
               color: textColor,
-              opacity: active ? 1 : 0.42,
-              fontWeight: active ? "700" : "400",
-              paddingHorizontal: 26
+              opacity: act ? 1 : 0.34,
+              fontWeight: act ? "800" : "700",
+              paddingHorizontal: 30
             };
-            if (active) {
-              lineStyle.textShadowColor = "rgba(255,255,255,0.55)";
-              lineStyle.textShadowRadius = 18;
+            if (act) {
+              lineStyle.textShadowColor = "rgba(255,255,255,0.28)";
+              lineStyle.textShadowRadius = 10;
               lineStyle.textShadowOffset = { width: 0, height: 0 };
             }
-            lineEls.push(h(Text, { key: "lyr-line-" + j, style: lineStyle, children: txt }));
+            var kids = null;
+            if (act && hasWords) {
+              kids = [];
+              for (var wi = 0; wi < ln.words.length; wi++) {
+                var wv = ln.words[wi];
+                var sung = currentTime >= wv.t;
+                kids.push(h(Text, {
+                  key: "w" + wi,
+                  style: { color: sung ? textColor : "rgba(255,255,255,0.38)" },
+                  children: wv.w
+                }));
+              }
+            }
+            lineEls.push(h(Text, {
+              key: "lyr-line-" + j,
+              style: lineStyle,
+              suppressHighlighting: true,
+              onPress: (p.onSeek && typeof p.onSeek === "function") ? (function (lt) {
+                return function () {
+                  try { p.onSeek(Math.max(0, lt - 0.25)); } catch (eS) {}
+                };
+              })(ln.time) : undefined
+            }, kids || txt));
           }
         } else if (loading) {
-          lineEls.push(h(Text, { key: "lyr-loading", style: { fontSize: 15, color: textColor, opacity: 0.5, textAlign: "center" }, children: "Loading lyrics\u2026" }));
+          lineEls.push(h(Text, { key: "lyr-loading", style: { fontSize: 16, color: textColor, opacity: 0.55, textAlign: "center" }, children: "Carregando lyrics\u2026" }));
         } else if (text) {
-          lineEls.push(h(Text, { key: "lyr-plain", style: { fontSize: 16, lineHeight: 26, color: textColor, opacity: 0.8, textAlign: "center", paddingHorizontal: 28 }, children: text }));
+          lineEls.push(h(Text, { key: "lyr-plain", style: { fontSize: 17, lineHeight: 28, color: textColor, opacity: 0.75, textAlign: "left", paddingHorizontal: 30 }, children: text }));
         } else {
           lineEls.push(h(Text, { key: "lyr-empty", style: { fontSize: 15, color: textColor, opacity: 0.5, textAlign: "center" }, children: "Lyrics not available" }));
         }
