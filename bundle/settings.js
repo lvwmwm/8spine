@@ -76,9 +76,35 @@
             }
             if (W && W !== type) type = W;
           }
+          if (LYR && LYR.on && !LYR.orig && type) {
+            var tn = "";
+            try {
+              if (typeof type === "function") tn = type.name || type.displayName || "";
+              else if (type && typeof type === "object" && typeof type.type === "function") {
+                tn = type.type.name || type.type.displayName || "";
+              }
+            } catch (eT) {}
+            var sig = false;
+            try {
+              sig = !!(props && props.track !== undefined && typeof props.currentTime === "number" &&
+                props.duration !== undefined && typeof props.onSeek === "function");
+            } catch (eP) {}
+            if (tn === "LyricsView" || sig) {
+              LYR.orig = type;
+              try { LYR.view = LYR.view || buildLyricsView(spine); } catch (eV2) {}
+              if (LYR.view) {
+                LYR.state = "installed";
+                LYR.via = sig ? "jsx-sig" : "jsx-name";
+              }
+              try { spine.log("lyrics", "captured via jsx hook: " + (sig ? "sig" : tn)); } catch (eL2) {}
+            }
+          }
           if (LYR && LYR.on && type === LYR.orig) {
             var LV = LYR.view;
-            if (LV && LV !== type) type = LV;
+            if (LV && LV !== type) {
+              type = LV;
+              st.renders++;
+            }
           }
           if (props && props.children === "paras8") {
             st.paras8Card = true;
@@ -399,7 +425,8 @@
             children: "engine: " + (LYR ? LYR.state : "?") +
               " | orig: " + (LYR && LYR.orig ? "ok" : "-") +
               " | view: " + (LYR && LYR.view ? "ok" : "-") +
-              " | swap: " + ((LYR && LYR.swap) || "-")
+              " | swap: " + ((LYR && LYR.swap) || "-") +
+              " | via: " + ((LYR && LYR.via) || "-")
           })
         ])
       ];
