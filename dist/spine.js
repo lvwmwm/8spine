@@ -9,7 +9,7 @@
   }
 
   var SPINE = (g.SPINE = g.SPINE || {});
-  SPINE.version = "0.18.1";
+  SPINE.version = "0.18.2";
   SPINE.booted = false;
   SPINE.warmupEnabled = true;
   SPINE.app = { bundleTime: g.__BUNDLE_START_TIME__ || 0 };
@@ -4081,6 +4081,7 @@
               " | via: " + ((LYR && LYR.via) || "-") +
               " | src: " + ((LYR && LYR.lastSource) || "-") +
               " | t:" + ((LYR && LYR.lastTime) || 0) +
+              ((LYR && LYR.timeSrc) ? "/" + LYR.timeSrc : "") +
               " lines:" + ((LYR && LYR.lastLines) || 0) +
               " idx:" + ((LYR && LYR.lastIdx !== undefined) ? LYR.lastIdx : "-")
           })
@@ -4223,9 +4224,8 @@
         try {
           trackKey = String(track.id || track.key || track.isrc || track.uri || "");
         } catch (e) {}
-        var currentTime = (typeof p.currentTime === "number") ? p.currentTime :
-          (typeof p.position === "number") ? p.position :
-          (typeof p.progress === "number") ? p.progress : 0;
+        var scroll = useRef(null);
+        var lastIdx = useRef(-1);
         var textColor = p.textColor || "#ffffff";
         var imageUrl = p.imageUrl || null;
         var pf = prefs();
@@ -4244,6 +4244,27 @@
         var setBoxH = boxState[1];
         var scroll = useRef(null);
         var lastIdx = useRef(-1);
+        var progHookState = useState(function () {
+          try {
+            var found = null;
+            spine.metro.find(function (ex) {
+              if (ex && typeof ex.useProgress === "function") { found = ex.useProgress; return true; }
+              return false;
+            });
+            return found;
+          } catch (eP1) { return null; }
+        });
+        var progHook = progHookState[0];
+        var prog = null;
+        try { prog = progHook ? progHook(200) : null; } catch (eP2) {}
+        var tProp = (typeof p.currentTime === "number") ? p.currentTime :
+          (typeof p.position === "number") ? p.position :
+          (typeof p.progress === "number") ? p.progress : 0;
+        var tLive = (prog && typeof prog.position === "number") ? prog.position : null;
+        var currentTime = (tLive !== null && tLive > 0) ? tLive :
+          (tProp > 0) ? tProp :
+          (tLive !== null ? tLive : 0);
+        try { LYR.timeSrc = (tLive !== null && tLive > 0) ? "hook" : (currentTime > 0 ? "prop" : "zero"); } catch (eT0) {}
 
         useEffect(function () {
           var cancelled = false;
