@@ -9,7 +9,7 @@
   }
 
   var SPINE = (g.SPINE = g.SPINE || {});
-  SPINE.version = "0.17.16";
+  SPINE.version = "0.17.17";
   SPINE.booted = false;
   SPINE.warmupEnabled = true;
   SPINE.app = { bundleTime: g.__BUNDLE_START_TIME__ || 0 };
@@ -3943,6 +3943,7 @@
           var parts = [];
           parts.push("jsx:" + (st.hooked ? "ok" : "NO"));
           parts.push("elems:" + (st.jsxSeen || 0));
+          if (st.jsxCopies) parts.push("copies:" + st.jsxCopies);
           var seen = g.__SPINE_LYRIC_SEEN__;
           if (seen && seen.length) {
             var s0 = [];
@@ -5873,8 +5874,18 @@
     try {
       spine.metro.pushCb(function (id, rec) {
         try {
-          if (!rec.exports || st.Wrapped) return;
+          if (!rec.exports) return;
           var ex = rec.exports;
+          if (JSX_MATCH(ex) && !ex.__spineJsxHooked && st.jsxRichHooked) {
+            try {
+              ex.__spineJsxHooked = true;
+              var hrx = hookJsxExports(ex, st);
+              if (hrx.hooked) {
+                st.jsxCopies = (st.jsxCopies || 0) + 1;
+              }
+            } catch (eHx) {}
+          }
+          if (!ex || st.Wrapped) return;
           var d = (ex && ex.__esModule && ex.default !== undefined) ? ex.default : ex;
           var isSettings = typeof d === "function" && (d.name === "SettingsPage" || d.displayName === "SettingsPage");
           if (isSettings || JSX_MATCH(rec.exports)) {
