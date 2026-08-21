@@ -842,6 +842,85 @@
       return LYR;
     }
 
+    function buildPageShell(spine, route, title, sections) {
+      var nav = null;
+      var theme = {};
+      try {
+        if (route && route.navigation) nav = route.navigation;
+        var r = (route && route.route) || {};
+        if (r.navigation) nav = r.navigation;
+        var ps = (r && r.params) || {};
+        if (ps.theme) theme = ps.theme;
+      } catch (e) {}
+      var R = ui.react();
+      var RN = ui.rn();
+      var L = ui.layout();
+      if (!R || !RN) {
+        return null;
+      }
+      var h = ui.h;
+      var styles = (L && L.styles) || {};
+      var Ion = ui.icons();
+      var Blur = ui.blurView();
+      var pressType = RN.View;
+      var names = ["Pressable", "TouchableOpacity", "TouchableHighlight", "View"];
+      for (var i = 0; i < names.length; i++) {
+        try {
+          if (typeof RN[names[i]] === "function") {
+            pressType = RN[names[i]];
+            break;
+          }
+        } catch (e2) {}
+      }
+      var pageWidth = null;
+      try {
+        if (L && typeof L.useSettingsPaneLayout === "function") {
+          pageWidth = L.useSettingsPaneLayout(route).pageWidth;
+        }
+      } catch (e3) {}
+      var goBack = function () {
+        try {
+          if (nav && typeof nav.goBack === "function") nav.goBack();
+        } catch (e4) {}
+      };
+      var blurEl = null;
+      if (Blur) {
+        blurEl = h(Blur, {
+          style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 },
+          blurType: "dark",
+          blurAmount: 20,
+          pointerEvents: "none"
+        });
+      }
+      var backBtn = h(pressType, {
+        style: styles.backButtonContainer,
+        onPress: goBack,
+        hitSlop: 10
+      }, Ion && Ion.Ionicons ? h(Ion.Ionicons, { name: "chevron-back", size: 32, color: theme.primaryText }) : null);
+      var header = h(RN.View, { style: styles.settingsPageHeader },
+        [blurEl, backBtn, h(RN.Text, {
+          style: [styles.settingsPageTitle, { color: theme.primaryText }],
+          children: title
+        })].filter(function (x) { return x !== null; }));
+      var Scroll = null;
+      try {
+        Scroll = (RN.Animated && typeof RN.Animated.ScrollView === "function") ? RN.Animated.ScrollView :
+          ((typeof RN.ScrollView === "function") ? RN.ScrollView : null);
+      } catch (eS) {}
+      var kids = (sections || []).filter(function (x) { return x !== null; });
+      var content = Scroll ? h(Scroll, {
+        style: { flex: 1, width: pageWidth || undefined, alignSelf: "center" },
+        contentContainerStyle: { paddingBottom: 100 }
+      }, kids) : h(RN.View, {
+        style: { flex: 1, width: pageWidth || undefined, alignSelf: "center" },
+        children: kids
+      });
+      return h(RN.View, {
+        style: [styles.settingsPageContainer, { backgroundColor: theme.background }],
+        children: [header, content]
+      });
+    }
+
     function buildUnpatchPage(spine, route) {
       var nav = null;
       var theme = {};
@@ -918,28 +997,6 @@
 
       
       
-      var blurEl = null;
-      if (Blur) {
-        blurEl = h(Blur, {
-          style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 },
-          blurType: "dark",
-          blurAmount: 20,
-          pointerEvents: "none"
-        });
-      }
-      var backBtn = h(pressType, {
-        style: styles.backButtonContainer,
-        onPress: goBack,
-        hitSlop: 10
-      }, Ion && Ion.Ionicons ? h(Ion.Ionicons, { name: "chevron-back", size: 32, color: theme.primaryText }) : null);
-      var header = h(RN.View, { style: styles.settingsPageHeader },
-        [blurEl, backBtn, h(RN.Text, {
-          style: [styles.settingsPageTitle, { color: theme.primaryText }],
-          children: "paras8"
-        })].filter(function (x) { return x !== null; }));
-
-      
-      
       var about = null;
       try {
         about = ui.buildSettingsSection(route, {
@@ -1007,10 +1064,65 @@
           exportGroup
 ]
       });
+      var onLyricsRow = function () {
+        try {
+          if (nav && typeof nav.navigate === "function") {
+            nav.navigate("SpineLyrics", { theme: theme });
+          }
+        } catch (e) {}
+      };
+      var lyricsRow = h(pressType, {
+        key: "spine-lyrics-row",
+        style: [
+          styles.settingsRowGrouped,
+          styles.settingsRowFirst,
+          styles.settingsRowLast,
+          { borderBottomWidth: 0, backgroundColor: theme.card }
+        ],
+        onPress: onLyricsRow
+      }, [
+        h(RN.Text, { style: [styles.settingsRowText, { color: theme.primaryText }], children: "Lyrics settings" }),
+        Ion && Ion.Ionicons ? h(Ion.Ionicons, { name: "chevron-forward", size: 20, color: theme.secondaryText }) : null
+      ].filter(function (x) { return x !== null; }));
+      var lyricsGroup = (L && L.SettingsGroup) ? h(L.SettingsGroup, { theme: theme, children: lyricsRow }) : lyricsRow;
+      var lyricsSection = h(RN.View, {
+        style: styles.settingsSection,
+        children: [
+          h(RN.Text, {
+            style: [styles.settingsSectionTitle, { color: theme.secondaryText, marginLeft: 16, marginBottom: 8 }],
+            children: "Lyrics"
+          }),
+          lyricsGroup
+        ]
+      });
+      var sections = [about, lyricsSection, exportSection, dangerSection];
+      return buildPageShell(spine, route, "paras8", sections);
+    }
+
+    function buildLyricsPage(spine, route) {
+      var R = ui.react();
+      var RN = ui.rn();
+      var L = ui.layout();
+      if (!R || !RN) {
+        return null;
+      }
+      var h = ui.h;
+      var styles = (L && L.styles) || {};
+      var Ion = ui.icons();
+      var pressType = RN.View;
+      var names = ["Pressable", "TouchableOpacity", "TouchableHighlight", "View"];
+      for (var i = 0; i < names.length; i++) {
+        try {
+          if (typeof RN[names[i]] === "function") {
+            pressType = RN[names[i]];
+            break;
+          }
+        } catch (e2) {}
+      }
       var lyricsSection = null;
       try {
         lyricsSection = buildLyricsSection(spine, route, {
-          theme: theme,
+          theme: ((route && route.route && route.route.params) || {}).theme || {},
           styles: styles,
           h: h,
           RN: RN,
@@ -1019,23 +1131,7 @@
           Ion: Ion
         });
       } catch (e) {}
-      var sections = [about, lyricsSection, exportSection, dangerSection].filter(function (x) { return x !== null; });
-      var Scroll = null;
-      try {
-        Scroll = (RN.Animated && typeof RN.Animated.ScrollView === "function") ? RN.Animated.ScrollView :
-          ((typeof RN.ScrollView === "function") ? RN.ScrollView : null);
-      } catch (eS) {}
-      var content = Scroll ? h(Scroll, {
-        style: { flex: 1, width: pageWidth || undefined, alignSelf: "center" },
-        contentContainerStyle: { paddingBottom: 100 }
-      }, sections) : h(RN.View, {
-        style: { flex: 1, width: pageWidth || undefined, alignSelf: "center" },
-        children: sections
-      });
-      return h(RN.View, {
-        style: [styles.settingsPageContainer, { backgroundColor: theme.background }],
-        children: [header, content]
-      });
+      return buildPageShell(spine, route, "Lyrics", [lyricsSection]);
     }
 
     
@@ -1722,6 +1818,7 @@
         if (!st.screenType) return el;
         var s1 = injectScreen(ch, "SpineUnpatch", "spine-unpatch", buildUnpatchPage);
         var s2 = injectScreen(ch, "SpineExport", "spine-export", buildExportPage);
+        var s3 = injectScreen(ch, "SpineLyrics", "spine-lyrics", buildLyricsPage);
         return el;
       }
       ["jsx", "jsxs"].forEach(function (name) {
