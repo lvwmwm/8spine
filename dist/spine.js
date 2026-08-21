@@ -9,7 +9,7 @@
   }
 
   var SPINE = (g.SPINE = g.SPINE || {});
-  SPINE.version = "0.17.10";
+  SPINE.version = "0.17.11";
   SPINE.booted = false;
   SPINE.warmupEnabled = true;
   SPINE.app = { bundleTime: g.__BUNDLE_START_TIME__ || 0 };
@@ -4228,6 +4228,18 @@
     }
 
     function makeLyricsProxy(LYR) {
+      var hFn = null;
+      try { hFn = ui.h; } catch (e0) {}
+      var oname = "LyricsView";
+      try {
+        if (LYR.orig) {
+          if (typeof LYR.orig === "function") {
+            oname = LYR.orig.name || LYR.orig.displayName || oname;
+          } else if (LYR.orig.type && typeof LYR.orig.type === "function") {
+            oname = LYR.orig.type.displayName || LYR.orig.type.name || oname;
+          }
+        }
+      } catch (en) {}
       var proxy = function (props) {
         if (LYR.on && LYR.view) {
           try {
@@ -4237,17 +4249,20 @@
           }
         }
         if (LYR.orig) {
-          try { return LYR.orig(props); } catch (e3) {}
+          try {
+            if (typeof LYR.orig === "function") return LYR.orig(props);
+            if (typeof hFn === "function") return hFn(LYR.orig, props);
+          } catch (e3) {}
         }
         return null;
       };
       try {
         Object.defineProperty(proxy, "name", {
-          value: (LYR.orig && LYR.orig.name) || "LyricsView",
+          value: oname,
           configurable: true
         });
         Object.defineProperty(proxy, "displayName", {
-          value: (LYR.orig && LYR.orig.displayName) || (LYR.orig && LYR.orig.name) || "LyricsView",
+          value: oname,
           configurable: true
         });
       } catch (e) {}
@@ -4537,11 +4552,16 @@
             if (!ex) return;
             var idStr = String(id);
             var d = (ex.__esModule && ex.default !== undefined) ? ex.default : null;
-            var named = typeof d === "function" && (d.name === "LyricsView" || d.displayName === "LyricsView");
+            var inner = (d && typeof d === "object" && typeof d.type === "function") ? d.type : null;
+            var fnName = "";
+            if (typeof d === "function") fnName = d.name || d.displayName || "";
+            else if (inner) fnName = inner.name || inner.displayName || "";
+            var named = fnName === "LyricsView";
+            var usable = (typeof d === "function") || !!inner;
             var isLyrics = named || idStr === "2644" ||
-              (typeof d === "function" && d.__spineLyricsProxy === true);
+              !!(d && d.__spineLyricsProxy === true);
             if (!isLyrics) return;
-            if (!LYR.orig && typeof d === "function" && d.__spineLyricsProxy !== true) {
+            if (!LYR.orig && usable && !(d && d.__spineLyricsProxy === true)) {
               LYR.orig = d;
             }
             if (!LYR.orig) return;
