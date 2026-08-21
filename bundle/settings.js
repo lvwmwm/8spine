@@ -29,6 +29,22 @@
     };
     var TOKEN = Symbol.for("spine.settings.injected");
 
+    function sig2(props, type) {
+      try {
+        if (props && props.track !== undefined && typeof props.currentTime === "number" &&
+          props.duration !== undefined && typeof props.onSeek === "function") return true;
+      } catch (e) {}
+      try {
+        var tn = "";
+        if (typeof type === "function") tn = type.name || type.displayName || "";
+        else if (type && typeof type === "object" && type.type && typeof type.type === "function") {
+          tn = type.type.name || type.type.displayName || "";
+        }
+        if (tn === "LyricsView") return true;
+      } catch (e2) {}
+      return false;
+    }
+
     function interop(exps) {
       if (!exps) return null;
       return (exps.__esModule && exps.default !== undefined) ? exps.default : exps;
@@ -68,6 +84,7 @@
           return;
         }
         var wrapped = function (type, props, key) {
+          st.jsxSeen = (st.jsxSeen || 0) + 1;
           if (st.Orig && type === st.Orig) {
             st.renders++;
             var W = st.Wrapped || null;
@@ -76,28 +93,39 @@
             }
             if (W && W !== type) type = W;
           }
-          if (LYR && LYR.on && !LYR.orig && type) {
-            var tn = "";
+          if (LYR && LYR.on && !LYR.orig && props) {
             try {
-              if (typeof type === "function") tn = type.name || type.displayName || "";
-              else if (type && typeof type === "object" && typeof type.type === "function") {
-                tn = type.type.name || type.type.displayName || "";
+              var hit = false;
+              for (var qk in props) {
+                if (qk === "children") continue;
+                if (/lyric/i.test(qk)) { hit = true; break; }
               }
-            } catch (eT) {}
-            var sig = false;
-            try {
-              sig = !!(props && props.track !== undefined && typeof props.currentTime === "number" &&
-                props.duration !== undefined && typeof props.onSeek === "function");
-            } catch (eP) {}
-            if (tn === "LyricsView" || sig) {
-              LYR.orig = type;
-              try { LYR.view = LYR.view || buildLyricsView(spine); } catch (eV2) {}
-              if (LYR.view) {
-                LYR.state = "installed";
-                LYR.via = sig ? "jsx-sig" : "jsx-name";
+              var tnm = "";
+              try {
+                if (typeof type === "function") tnm = type.displayName || type.name || "";
+                else if (type && typeof type === "object" && type.type && typeof type.type === "function") {
+                  tnm = type.type.displayName || type.type.name || "";
+                }
+              } catch (e5) {}
+              if (!hit && /lyric/i.test(tnm)) hit = true;
+              if (hit) {
+                var arr = (g.__SPINE_LYRIC_SEEN__ = g.__SPINE_LYRIC_SEEN__ || []);
+                var pks = [];
+                try { for (var pk2 in props) { pks.push(pk2); if (pks.length > 14) break; } } catch (e6) {}
+                if (arr.length < 24) {
+                  arr.push({ n: tnm || "(anon)", p: pks.join(",") });
+                }
+                if (tn === "LyricsView" || sig2(props, type)) {
+                  LYR.orig = type;
+                  try { LYR.view = LYR.view || buildLyricsView(spine); } catch (eV2) {}
+                  if (LYR.view) {
+                    LYR.state = "installed";
+                    LYR.via = "jsx-probe";
+                  }
+                  try { spine.log("lyrics", "captured via jsx probe: " + tnm); } catch (eL2) {}
+                }
               }
-              try { spine.log("lyrics", "captured via jsx hook: " + (sig ? "sig" : tn)); } catch (eL2) {}
-            }
+            } catch (eQ) {}
           }
           if (LYR && LYR.on && type === LYR.orig) {
             var LV = LYR.view;
@@ -146,17 +174,25 @@
 
     function hookJsxRuntime(st) {
       var out = { hooked: false, stages: [] };
-      var f = null;
+      var list = [];
       try {
-        f = spine.metro.scanDirect(JSX_MATCH);
+        list = spine.metro.findAll(JSX_MATCH) || [];
       } catch (e) {}
-      if (!f) {
+      if (!list.length) {
+        try {
+          var f0 = spine.metro.scanDirect(JSX_MATCH);
+          if (f0) list = [f0];
+        } catch (e2) {}
+      }
+      if (!list.length) {
         out.stages.push("jsx:nao-encontrado");
         return out;
       }
-      var r = hookJsxExports(f.module, st);
-      out.stages.push("jsx:" + r.stages.join("/"));
-      out.hooked = r.hooked;
+      for (var i = 0; i < list.length; i++) {
+        var r = hookJsxExports(list[i].module, st);
+        out.stages.push("jsx[" + (list[i].id || i) + "]:" + r.stages.join("/"));
+        if (r.hooked) out.hooked = true;
+      }
       return out;
     }
 
@@ -328,6 +364,46 @@
       var clearState = R.useState(null);
       var clearInfo = clearState[0];
       var setClearInfo = clearState[1];
+      var diagState = R.useState(function () {
+        try {
+          var parts = [];
+          parts.push("jsx:" + (st.hooked ? "ok" : "NO"));
+          parts.push("elems:" + (st.jsxSeen || 0));
+          var seen = g.__SPINE_LYRIC_SEEN__;
+          if (seen && seen.length) {
+            var s0 = [];
+            for (var si = 0; si < seen.length && si < 3; si++) s0.push(seen[si].n + "{" + seen[si].p + "}");
+            parts.push("seen[" + seen.length + "] " + s0.join(" | "));
+          } else {
+            parts.push("seen:0");
+          }
+          var mm = null;
+          try { mm = spine.metro.mirror() || {}; } catch (em2) {}
+          var found = [];
+          for (var mk in mm) {
+            var rec = mm[mk];
+            var ex = rec && rec.exports;
+            if (!ex || typeof ex !== "object") continue;
+            var dv = (ex.__esModule && ex.default !== undefined) ? ex.default : ex;
+            var tv = "";
+            var kind = typeof dv;
+            if (kind === "function") tv = dv.displayName || dv.name || "";
+            else if (dv && typeof dv === "object" && dv.type && typeof dv.type === "function") {
+              kind = "memo";
+              tv = dv.type.displayName || dv.type.name || "";
+            }
+            if (/lyric/i.test(tv) || /lyric/i.test(String(mk))) {
+              found.push(mk + ":" + kind + ":" + (tv || "?"));
+              if (found.length > 8) break;
+            }
+          }
+          parts.push("mirror: " + (found.length ? found.join(" | ") : "nenhum"));
+          return parts.join(" | ");
+        } catch (eD2) {
+          return "diag-err: " + ((eD2 && eD2.message) || eD2);
+        }
+      });
+      var diag = diagState[0];
 
       function setOn(t, v) {
         t.set(v);
@@ -427,6 +503,12 @@
               " | view: " + (LYR && LYR.view ? "ok" : "-") +
               " | swap: " + ((LYR && LYR.swap) || "-") +
               " | via: " + ((LYR && LYR.via) || "-")
+          })
+        ]),
+        h(RN.View, { key: "lyr-diag", style: rowStyle() }, [
+          h(RN.Text, {
+            style: { fontSize: 11, color: theme.secondaryText },
+            children: diag
           })
         ])
       ];
