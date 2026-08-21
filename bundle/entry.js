@@ -1,4 +1,4 @@
-﻿(function () {
+(function () {
   "use strict";
 
   var g = (typeof globalThis !== "undefined") ? globalThis : ((typeof global !== "undefined") ? global : window);
@@ -8,7 +8,7 @@
   }
 
   var SPINE = (g.SPINE = g.SPINE || {});
-  SPINE.version = "0.17.6";
+  SPINE.version = "0.17.7";
   SPINE.booted = false;
   SPINE.warmupEnabled = true;
   SPINE.app = { bundleTime: g.__BUNDLE_START_TIME__ || 0 };

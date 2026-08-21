@@ -3,15 +3,23 @@
 
   SPINE.registerMod("settings-spine-row", function (spine) {
     var find = spine.metro.find;
+    var findAll = spine.metro.findAll;
     var byName = spine.metro.byName;
     var ui = spine.ui;
 
     var g = (typeof globalThis !== "undefined") ? globalThis : ((typeof global !== "undefined") ? global : window);
 
-    
-    
-    
-    
+    var LYR = null;
+    try {
+      LYR = ((g.__SPINE_PRE__ = g.__SPINE_PRE__ || {})).lyrics = ((g.__SPINE_PRE__).lyrics || {
+        on: true,
+        orig: null,
+        view: null,
+        state: "idle"
+      });
+    } catch (e) {
+      LYR = { on: true, orig: null, view: null, state: "idle" };
+    }
 
     var JSX_MATCH = function (exps) {
       
@@ -65,11 +73,10 @@
             var W = st.Wrapped || (typeof st.build === "function" ? st.build() : null);
             if (W && W !== type) type = W;
           }
-          
-          
-          
-          
-          
+          if (LYR && LYR.on && type === LYR.orig) {
+            var LV = LYR.view;
+            if (LV && LV !== type) type = LV;
+          }
           if (props && props.children === "paras8") {
             st.paras8Card = true;
           } else if (props && props.children === "CLOUD DOWNLOADS MODULE") {
@@ -253,6 +260,446 @@
     
     
     
+    function buildLyricsSection(spine, route, ctx) {
+      var R = ui.react();
+      if (!R || typeof R.createElement !== "function" || typeof R.useState !== "function") {
+        return null;
+      }
+      return R.createElement(LyricsSection, { spine: spine, route: route, ctx: ctx });
+    }
+
+    function LyricsSection(props) {
+      var R = ui.react();
+      var spine = props.spine;
+      var ctx = props.ctx;
+      var theme = ctx.theme;
+      var styles = ctx.styles;
+      var h = ctx.h;
+      var RN = ctx.RN;
+      var pressType = ctx.pressType;
+      var L = ctx.L;
+      var Ion = ctx.Ion;
+
+      function mk(key, dflt) {
+        var s = R.useState(function () {
+          var v = dflt;
+          try {
+            var x = spine.prefs.get(key, dflt);
+            if (x !== undefined && x !== null) v = x;
+          } catch (e) {}
+          return v;
+        });
+        return { key: key, value: s[0], set: s[1] };
+      }
+
+      var enabled = mk("lyricsView", true);
+      var glow = mk("lyricsGlow", true);
+      var fade = mk("lyricsFade", true);
+      var bg = mk("lyricsBg", true);
+      var clearState = R.useState(null);
+      var clearInfo = clearState[0];
+      var setClearInfo = clearState[1];
+
+      function setOn(t, v) {
+        t.set(v);
+        try {
+          spine.prefs.set(t.key, v);
+        } catch (e) {}
+        if (t === enabled) {
+          try { if (LYR) LYR.on = !!v; } catch (e2) {}
+        }
+      }
+
+      function rowStyle() {
+        return [
+          styles.settingsRowGrouped,
+          styles.settingsRowFirst,
+          styles.settingsRowLast,
+          { borderBottomWidth: 0, backgroundColor: theme.card, flexDirection: "row", alignItems: "center" }
+        ];
+      }
+
+      function switchRow(t, title) {
+        return h(RN.View, { key: "lyr-sw-" + t.key, style: rowStyle() }, [
+          h(RN.View, { style: { flex: 1, paddingRight: 12 } }, [
+            h(RN.Text, { style: [styles.settingsRowText, { color: theme.primaryText }], children: title })
+          ]),
+          h(RN.Switch, {
+            value: t.value === true,
+            onValueChange: function (v) { setOn(t, v); }
+          })
+        ]);
+      }
+
+      function onClear() {
+        if (clearInfo === "busy") return;
+        setClearInfo("busy");
+        var fn = null;
+        try {
+          spine.metro.find(function (ex) {
+            if (ex && typeof ex.clearLyricsCache === "function") {
+              fn = ex.clearLyricsCache;
+              return true;
+            }
+            return false;
+          });
+        } catch (e) {}
+        if (!fn) {
+          setClearInfo("err:clearLyricsCache not found");
+          return;
+        }
+        var p = null;
+        try {
+          p = fn();
+        } catch (e) {
+          setClearInfo("err:" + ((e && e.message) || String(e)));
+          return;
+        }
+        if (p && typeof p.then === "function") {
+          p.then(function () { setClearInfo("ok"); }, function (e) {
+            setClearInfo("err:" + ((e && e.message) || String(e)));
+          });
+        } else {
+          setClearInfo("ok");
+        }
+      }
+
+      var clearLabel = null;
+      if (clearInfo === "busy") clearLabel = "Clearing\u2026";
+      else if (clearInfo === "ok") clearLabel = "Lyrics cache cleared";
+      else if (clearInfo && clearInfo.indexOf("err:") === 0) clearLabel = "Failed \u2013 " + clearInfo.slice(4);
+
+      var clearRow = h(pressType, {
+        key: "lyr-clear",
+        style: rowStyle(),
+        onPress: onClear
+      }, [
+        h(RN.View, { style: { flex: 1, paddingRight: 12 } }, [
+          h(RN.Text, { style: [styles.settingsRowText, { color: theme.primaryText }], children: "Clear lyrics cache" }),
+          clearLabel ? h(RN.Text, {
+            style: { fontSize: 12, color: (clearInfo === "ok" ? "#34C759" : theme.secondaryText), marginTop: 2 },
+            children: clearLabel
+          }) : null
+        ]),
+        (Ion && Ion.Ionicons) ? h(Ion.Ionicons, { name: "chevron-forward", size: 20, color: theme.secondaryText }) : null
+      ].filter(function (x) { return x !== null; }));
+
+      var rows = [
+        switchRow(enabled, "Custom lyrics view"),
+        switchRow(glow, "Glow effect"),
+        switchRow(fade, "Fade mask"),
+        switchRow(bg, "Artwork background"),
+        clearRow
+      ];
+      var group = (L && L.SettingsGroup) ? h(L.SettingsGroup, { theme: theme, children: rows }) : rows;
+      return h(RN.View, {
+        style: styles.settingsSection,
+        children: [
+          h(RN.Text, {
+            style: [styles.settingsSectionTitle, { color: theme.secondaryText, marginLeft: 16, marginBottom: 8 }],
+            children: "Lyrics"
+          }),
+          group
+        ]
+      });
+    }
+
+    function buildLyricsView(spine) {
+      var R = ui.react();
+      if (!R || typeof R.useState !== "function" || typeof R.useEffect !== "function" || typeof R.useRef !== "function") {
+        return null;
+      }
+      var RN = ui.rn();
+      if (!RN) return null;
+      var h = ui.h;
+      var useState = R.useState;
+      var useEffect = R.useEffect;
+      var useRef = R.useRef;
+      var Animated = null;
+      try { Animated = RN.Animated || null; } catch (e) {}
+      var ScrollView = null;
+      try { ScrollView = (typeof RN.ScrollView === "function") ? RN.ScrollView : null; } catch (e) {}
+      var Image = null;
+      try { Image = (typeof RN.Image === "function") ? RN.Image : null; } catch (e) {}
+      var Text = null;
+      try { Text = (typeof RN.Text === "function") ? RN.Text : null; } catch (e) {}
+      var View = null;
+      try { View = (typeof RN.View === "function") ? RN.View : null; } catch (e) {}
+      if (!Text || !View) return null;
+
+      var LINE_H = 44;
+      var PAD = 140;
+
+      function api() {
+        var out = { fetch: null, parse: null };
+        try {
+          spine.metro.find(function (ex) {
+            if (ex && typeof ex.fetchAndCacheLyrics === "function" && !out.fetch) {
+              out.fetch = ex.fetchAndCacheLyrics;
+            }
+            if (ex && typeof ex.parseLrc === "function" && !out.parse) {
+              out.parse = ex.parseLrc;
+            }
+            return !!(out.fetch && out.parse);
+          });
+        } catch (e) {}
+        return out;
+      }
+
+      function prefs() {
+        var out = { glow: true, fade: true, bg: true };
+        try {
+          var p = spine.prefs;
+          if (p && typeof p.get === "function") {
+            if (p.get("lyricsGlow", true) === false) out.glow = false;
+            if (p.get("lyricsFade", true) === false) out.fade = false;
+            if (p.get("lyricsBg", true) === false) out.bg = false;
+          }
+        } catch (e) {}
+        return out;
+      }
+
+      function LyricsView(props) {
+        var p = props || {};
+        var t0 = p.track || p;
+        var track = t0 || {};
+        var trackKey = "";
+        try {
+          trackKey = String(track.id || track.key || track.isrc || track.uri || "");
+        } catch (e) {}
+        var currentTime = (typeof p.currentTime === "number") ? p.currentTime : 0;
+        var textColor = p.textColor || "#ffffff";
+        var showBackground = p.showBackground === true;
+        var imageUrl = p.imageUrl || null;
+        var pf = prefs();
+
+        var loadingState = useState(true);
+        var loading = loadingState[0];
+        var setLoading = loadingState[1];
+        var textState = useState("");
+        var text = textState[0];
+        var setText = textState[1];
+        var linesState = useState([]);
+        var lines = linesState[0];
+        var setLines = linesState[1];
+        var boxState = useState(0);
+        var boxH = boxState[0];
+        var setBoxH = boxState[1];
+        var scroll = useRef(null);
+        var lastIdx = useRef(-1);
+        var glowAnim = useRef(null);
+
+        useEffect(function () {
+          var cancelled = false;
+          var a = api();
+          setLoading(true);
+          setLines([]);
+          setText("");
+          if (a.fetch && track) {
+            var q = null;
+            try { q = a.fetch(track); } catch (e) { q = null; }
+            if (q && typeof q.then === "function") {
+              q.then(function (lrc) {
+                if (cancelled) return;
+                setLoading(false);
+                if (!lrc || typeof lrc !== "string" || !lrc.length) {
+                  setText("");
+                  setLines([]);
+                  return;
+                }
+                setText(lrc);
+                if (/\[\d{1,3}:\d{2}/.test(lrc) && a.parse) {
+                  try {
+                    var arr = a.parse(lrc);
+                    setLines(Array.isArray(arr) ? arr : []);
+                  } catch (e) { setLines([]); }
+                } else {
+                  setLines([]);
+                }
+              }, function () {
+                if (cancelled) return;
+                setLoading(false);
+                setText("");
+                setLines([]);
+              });
+            } else {
+              setLoading(false);
+            }
+          } else {
+            setLoading(false);
+          }
+          return function () { cancelled = true; };
+        }, [trackKey]);
+
+        useEffect(function () {
+          if (!pf.glow || !Animated || glowAnim.current) return;
+          try {
+            var v = new Animated.Value(0.35);
+            glowAnim.current = v;
+            var loop = Animated.loop(Animated.sequence([
+              Animated.timing(v, { toValue: 0.8, duration: 1100, useNativeDriver: true }),
+              Animated.timing(v, { toValue: 0.35, duration: 1100, useNativeDriver: true })
+            ]));
+            loop.start();
+            return function () {
+              try { loop.stop(); } catch (e) {}
+            };
+          } catch (e) {}
+        }, []);
+
+        var idx = -1;
+        for (var i = 0; i < lines.length; i++) {
+          var tm = lines[i] && lines[i].time;
+          if (typeof tm === "number" && tm <= currentTime) idx = i;
+        }
+
+        useEffect(function () {
+          if (idx < 0 || !scroll.current || idx === lastIdx.current) return;
+          lastIdx.current = idx;
+          var y = Math.max(0, idx * LINE_H - (boxH / 2 - LINE_H / 2));
+          try {
+            if (typeof scroll.current.scrollTo === "function") {
+              scroll.current.scrollTo({ y: y, animated: true });
+            }
+          } catch (e) {}
+        }, [idx, boxH]);
+
+        var children = [];
+        var bgColor = "rgba(14,14,22,0.92)";
+        if (p.backgroundColor && p.backgroundColor !== "transparent") {
+          bgColor = p.backgroundColor;
+        }
+        children.push(h(View, { key: "lyr-bg", style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: bgColor } }));
+        if (showBackground && imageUrl && Image && pf.bg) {
+          children.push(h(Image, { key: "lyr-art", source: { uri: imageUrl }, resizeMode: "cover", style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, opacity: 0.16 } }));
+          children.push(h(View, { key: "lyr-art-shade", style: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(8,8,16,0.55)" } }));
+        }
+        if (pf.glow && Animated && glowAnim.current && idx >= 0) {
+          children.push(h(Animated.View, {
+            key: "lyr-glow",
+            pointerEvents: "none",
+            style: { position: "absolute", left: "10%", right: "10%", top: Math.max(20, boxH / 2 - 62), height: 124, borderRadius: 62, backgroundColor: "rgba(255,255,255,0.10)", opacity: glowAnim.current }
+          }));
+        }
+        if (pf.fade) {
+          children.push(h(View, { key: "lyr-fade-t", pointerEvents: "none", style: { position: "absolute", top: 0, left: 0, right: 0, height: 80, backgroundColor: "rgba(14,14,22,0.66)" } }));
+          children.push(h(View, { key: "lyr-fade-b", pointerEvents: "none", style: { position: "absolute", bottom: 0, left: 0, right: 0, height: 80, backgroundColor: "rgba(14,14,22,0.66)" } }));
+        }
+
+        var lineEls = [];
+        if (lines.length) {
+          for (var j = 0; j < lines.length; j++) {
+            var line = lines[j];
+            var txt = (line && line.text) ? line.text : "";
+            if (!txt) continue;
+            var active = j === idx;
+            var lineStyle = {
+              fontSize: active ? 26 : 17,
+              lineHeight: LINE_H,
+              textAlign: "center",
+              color: textColor,
+              opacity: active ? 1 : 0.42,
+              fontWeight: active ? "700" : "400",
+              paddingHorizontal: 26
+            };
+            if (active) {
+              lineStyle.textShadowColor = "rgba(255,255,255,0.55)";
+              lineStyle.textShadowRadius = 18;
+              lineStyle.textShadowOffset = { width: 0, height: 0 };
+            }
+            lineEls.push(h(Text, { key: "lyr-line-" + j, style: lineStyle, children: txt }));
+          }
+        } else if (loading) {
+          lineEls.push(h(Text, { key: "lyr-loading", style: { fontSize: 15, color: textColor, opacity: 0.5, textAlign: "center" }, children: "Loading lyrics\u2026" }));
+        } else if (text) {
+          lineEls.push(h(Text, { key: "lyr-plain", style: { fontSize: 16, lineHeight: 26, color: textColor, opacity: 0.8, textAlign: "center", paddingHorizontal: 28 }, children: text }));
+        } else {
+          lineEls.push(h(Text, { key: "lyr-empty", style: { fontSize: 15, color: textColor, opacity: 0.5, textAlign: "center" }, children: "Lyrics not available" }));
+        }
+
+        var scrollEl = null;
+        if (ScrollView && lines.length) {
+          scrollEl = h(ScrollView, {
+            ref: scroll,
+            style: { flex: 1 },
+            contentContainerStyle: { paddingTop: PAD, paddingBottom: PAD },
+            showsVerticalScrollIndicator: false,
+            onLayout: function (e) {
+              try {
+                var hh = e.nativeEvent && e.nativeEvent.layout && e.nativeEvent.layout.height;
+                if (hh && hh !== boxH) setBoxH(hh);
+              } catch (e2) {}
+            }
+          }, lineEls);
+        } else {
+          scrollEl = h(View, { style: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 24 } }, lineEls);
+        }
+        children.push(scrollEl);
+        return h(View, { style: { flex: 1, overflow: "hidden" } }, children);
+      }
+
+      return LyricsView;
+    }
+
+    function makeLyricsProxy(LYR) {
+      var proxy = function (props) {
+        if (LYR.on && LYR.view) return LYR.view(props);
+        if (LYR.orig) return LYR.orig(props);
+        return null;
+      };
+      try {
+        Object.defineProperty(proxy, "name", {
+          value: (LYR.orig && LYR.orig.name) || "LyricsView",
+          configurable: true
+        });
+        Object.defineProperty(proxy, "displayName", {
+          value: (LYR.orig && LYR.orig.displayName) || (LYR.orig && LYR.orig.name) || "LyricsView",
+          configurable: true
+        });
+      } catch (e) {}
+      proxy.__spineLyricsProxy = true;
+      return proxy;
+    }
+
+    function initLyrics(spine) {
+      if (LYR.state === "installed" || LYR.state === "watching") {
+        return LYR;
+      }
+      try {
+        LYR.on = spine.prefs.get("lyricsView", true) !== false;
+      } catch (e) {}
+      try {
+        spine.metro.pushCb(function (id, rec) {
+          try {
+            var ex = rec.exports;
+            if (!ex) return;
+            var idStr = String(id);
+            var d = (ex.__esModule && ex.default !== undefined) ? ex.default : null;
+            var isLyrics = idStr === "2644" ||
+              (typeof d === "function" && (d.name === "LyricsView" || d.displayName === "LyricsView" || d.__spineLyricsProxy === true));
+            if (!isLyrics) return;
+            if (!LYR.orig && typeof d === "function" && d.__spineLyricsProxy !== true) {
+              LYR.orig = d;
+            }
+            var V = LYR.view || buildLyricsView(spine);
+            if (!V) {
+              LYR.state = "no-view";
+              return;
+            }
+            LYR.view = V;
+            if (LYR.orig && ex.__esModule && ex.default === LYR.orig) {
+              trySetDefault(ex, makeLyricsProxy(LYR));
+            }
+            LYR.state = "installed";
+          } catch (e) {}
+        });
+        LYR.state = "watching";
+      } catch (e) {
+        LYR.state = "err:" + ((e && e.message) || String(e));
+      }
+      return LYR;
+    }
+
     function buildUnpatchPage(spine, route) {
       var nav = null;
       var theme = {};
@@ -416,11 +863,23 @@
             children: "Music"
           }),
           exportGroup
-        ]
+]
       });
+      var lyricsSection = null;
+      try {
+        lyricsSection = buildLyricsSection(spine, route, {
+          theme: theme,
+          styles: styles,
+          h: h,
+          RN: RN,
+          pressType: pressType,
+          L: L,
+          Ion: Ion
+        });
+      } catch (e) {}
       var content = h(RN.View, {
         style: { flex: 1, width: pageWidth || undefined, alignSelf: "center" },
-        children: [about, exportSection, dangerSection].filter(function (x) { return x !== null; })
+        children: [about, lyricsSection, exportSection, dangerSection].filter(function (x) { return x !== null; })
       });
       return h(RN.View, {
         style: [styles.settingsPageContainer, { backgroundColor: theme.background }],
@@ -1281,23 +1740,29 @@
       });
     } catch (e) {}
 
+    try {
+      initLyrics(spine);
+    } catch (e) {}
+
     function ensureOrig() {
       if (st.Orig) return true;
-      if (st.OrigProxy) return false;
-      var found = null;
+      var cands = [];
       try {
-        found = find(byName("SettingsPage"));
+        cands = findAll(byName("SettingsPage")) || [];
       } catch (e) {}
-      var exps = found ? found.module : null;
-      if (!exps && st.exps) exps = st.exps;
-      if (!exps) return false;
-      var Orig = interop(exps);
-      if (Orig && typeof Orig === "function" && Orig.__spineProxy !== true) {
-        st.exps = exps;
-        st.Orig = Orig;
-        return true;
+      if (!cands.length && st.exps) {
+        cands = [{ module: st.exps }];
       }
-      st.OrigProxy = true;
+      for (var i = 0; i < cands.length; i++) {
+        var exps = cands[i] && cands[i].module;
+        if (!exps) continue;
+        var Orig = interop(exps);
+        if (Orig && typeof Orig === "function" && Orig.__spineProxy !== true && Orig[TOKEN] !== true) {
+          st.exps = exps;
+          st.Orig = Orig;
+          return true;
+        }
+      }
       return false;
     }
 
@@ -1345,8 +1810,11 @@
       (function retry() {
         
         
-        
-        
+        try {
+          g.__SPINE_SCAN_BUSY__ = 0;
+          var pre0 = g.__SPINE_PRE__;
+          if (pre0) pre0.scanState = undefined;
+        } catch (e0) {}
         try { spine.metro.seedMirror(); } catch (e2) {}
         if (applyOnce()) {
           scheduleReports(st);
