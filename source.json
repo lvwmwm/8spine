@@ -1,4 +1,4 @@
-﻿{
+{
   "category:Parasy8": [
     {
       "id": "paras8-liver",
@@ -6,7 +6,10 @@
       "author": "Livie",
       "version": "0.12.2",
       "description": "Parasyte loader",
-      "labels": ["Parasy8", "loader"],
+      "labels": [
+        "Parasy8",
+        "loader"
+      ],
       "download": "loader/loader.js",
       "type": "MODULE"
     }
@@ -16,12 +19,17 @@
       "id": "liver",
       "name": "Liver",
       "author": "Livie",
-      "version": "3.2.0",
+      "version": "3.6.0",
       "description": "best module in the universe",
-      "labels": ["MP3", "FLAC", "LOSSLESS", "MULTI-SOURCE"],
+      "labels": [
+        "MP3",
+        "FLAC",
+        "LOSSLESS",
+        "MULTI-SOURCE"
+      ],
       "trusted": true,
       "featured": true,
-      "download": "liver_module.js",
+      "download": "liver_module.8spine",
       "type": "MODULE"
     }
   ]
