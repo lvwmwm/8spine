@@ -495,8 +495,340 @@
           exportGroup
 ]
       });
-      var sections = [about, exportSection, dangerSection];
+      var onDebugRow = function () {
+        try {
+          if (nav && typeof nav.navigate === "function") {
+            nav.navigate("SpineDebug", { theme: theme });
+          }
+        } catch (e) {}
+      };
+      var debugRow = h(pressType, {
+        key: "spine-debug-row",
+        style: [
+          styles.settingsRowGrouped,
+          styles.settingsRowFirst,
+          styles.settingsRowLast,
+          { borderBottomWidth: 0, backgroundColor: theme.card }
+        ],
+        onPress: onDebugRow
+      }, [
+        h(RN.Text, { style: [styles.settingsRowText, { color: theme.primaryText }], children: "Debug" }),
+        Ion && Ion.Ionicons ? h(Ion.Ionicons, { name: "chevron-forward", size: 20, color: theme.secondaryText }) : null
+      ].filter(function (x) { return x !== null; }));
+      var debugGroup = (L && L.SettingsGroup) ? h(L.SettingsGroup, { theme: theme, children: debugRow }) : debugRow;
+      var debugSection = h(RN.View, {
+        style: styles.settingsSection,
+        children: [
+          h(RN.Text, {
+            style: [styles.settingsSectionTitle, { color: theme.secondaryText, marginLeft: 16, marginBottom: 8 }],
+            children: "Developer"
+          }),
+          debugGroup
+        ]
+      });
+      var sections = [about, exportSection, debugSection, dangerSection];
       return buildPageShell(spine, route, "paras8", sections);
+    }
+
+    var debugWs = null;
+    var debugPolling = false;
+    var debugPollTimer = null;
+
+    function debugStr(v) {
+      if (typeof v === "string") return v;
+      try {
+        if (v && typeof v === "object") return JSON.stringify(v);
+        return String(v);
+      } catch (e) {
+        try { return String(v); } catch (e2) { return "<?>"; }
+      }
+    }
+
+    function debugEval(spine, code) {
+      return Promise.resolve().then(function () {
+        var fn = new Function("spine", "SPINE", "globalThis", "return (async function(){ " + code + "\n}).call(null, spine, SPINE, globalThis);");
+        return fn.call(null, spine, g.SPINE, g);
+      }).then(function (v) {
+        return { ok: true, value: debugStr(v) };
+      }, function (e) {
+        return { ok: false, error: debugStr((e && e.stack) || (e && e.message) || e) };
+      });
+    }
+
+    function debugStop() {
+      debugPolling = false;
+      if (debugPollTimer) {
+        try { clearTimeout(debugPollTimer); } catch (e) {}
+        debugPollTimer = null;
+      }
+      if (debugWs) {
+        try { debugWs.close(); } catch (e2) {}
+        debugWs = null;
+      }
+    }
+
+    function debugHandle(spine, id, code, reply, onStatus) {
+      debugEval(spine, code).then(function (res) {
+        res.id = id;
+        if (reply) {
+          try { reply(res); } catch (e) {}
+        }
+        if (onStatus) {
+          try { onStatus((res.ok ? "ok: " : "erro: ") + String(res.ok ? res.value : res.error).slice(0, 160)); } catch (e2) {}
+        }
+      });
+    }
+
+    function debugPoll(spine, url, onStatus) {
+      debugPolling = true;
+      onStatus("polling " + url);
+      var tick = function () {
+        if (!debugPolling) return;
+        var p;
+        try { p = g.fetch(url, { headers: { "Cache-Control": "no-cache" } }); } catch (e) { p = Promise.reject(e); }
+        Promise.resolve(p).then(function (r) { return r.text(); }).then(function (txt) {
+          if (!txt) return null;
+          var msg = null;
+          try { msg = JSON.parse(txt); } catch (e2) { msg = { id: 0, code: txt }; }
+          if (!msg || typeof msg.code !== "string") return null;
+          return debugEval(spine, msg.code).then(function (res) {
+            res.id = msg.id;
+            try { return g.fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(res) }); } catch (e3) { return null; }
+          });
+        }).catch(function () { return null; }).then(function () {
+          if (debugPolling) {
+            try { debugPollTimer = setTimeout(tick, 1500); } catch (e4) {}
+          }
+        });
+      };
+      tick();
+    }
+
+    function debugConnect(spine, url, onStatus) {
+      debugStop();
+      if (!url) {
+        onStatus("sem url");
+        return false;
+      }
+      var isWs = false;
+      try { isWs = !!g.WebSocket && /^wss?:/i.test(url); } catch (e) {}
+      if (isWs) {
+        try {
+          var ws = new g.WebSocket(url);
+          debugWs = ws;
+          ws.onopen = function () { onStatus("conectado ws"); };
+          ws.onmessage = function (ev) {
+            var raw = ev && ev.data;
+            if (typeof raw !== "string") return;
+            var msg = null;
+            try { msg = JSON.parse(raw); } catch (e2) { msg = { id: 0, code: raw }; }
+            if (!msg || typeof msg.code !== "string") return;
+            debugHandle(spine, msg.id, msg.code, function (res) {
+              try { ws.send(JSON.stringify(res)); } catch (e3) {}
+            }, onStatus);
+          };
+          ws.onerror = function () { onStatus("erro ws"); };
+          ws.onclose = function () { onStatus("desconectado"); debugWs = null; };
+          return true;
+        } catch (e4) {
+          onStatus("ws falhou: " + debugStr((e4 && e4.message) || e4));
+        }
+      }
+      debugPoll(spine, url, onStatus);
+      return true;
+    }
+
+    function debugLoadBundle(spine, url, onStatus) {
+      var u = url + (url.indexOf("?") === -1 ? "?" : "&") + "ts=" + Date.now();
+      onStatus("baixando...");
+      var p;
+      try { p = g.fetch(u, { headers: { "Cache-Control": "no-cache" } }); } catch (e) { p = Promise.reject(e); }
+      return Promise.resolve(p).then(function (r) { return r.text(); }).then(function (code) {
+        if (!code) throw new Error("bundle vazio");
+        try { SPINE.storage.set("spine_bundle", code); } catch (e2) {}
+        try { g.SPINE.booted = false; } catch (e3) {}
+        try { g.__SPINE_EXEC_TS__ = 0; } catch (e4) {}
+        new Function(code)();
+        try {
+          if (g.SPINE && typeof g.SPINE.boot === "function") g.SPINE.boot();
+        } catch (e5) {}
+        onStatus("carregado (" + code.length + " bytes)");
+        return true;
+      }, function (e6) {
+        onStatus("falha: " + debugStr((e6 && e6.message) || e6));
+        return false;
+      });
+    }
+
+    function DebugPage(props) {
+      var R = ui.react();
+      var route = props.route;
+      var prefs = spine.prefs;
+      var bundleState = R.useState(prefs && typeof prefs.get === "function" ? (prefs.get("debugBundleUrl", "") || "") : "");
+      var serverState = R.useState(prefs && typeof prefs.get === "function" ? (prefs.get("debugServerUrl", "") || "") : "");
+      var statusState = R.useState("");
+      var liveState = R.useState(!!debugWs || debugPolling === true);
+      var evalState = R.useState("");
+      var bundleUrl = bundleState[0] || "";
+      var setBundleUrl = bundleState[1];
+      var serverUrl = serverState[0] || "";
+      var setServerUrl = serverState[1];
+      var status = statusState[0] || "";
+      var setStatus = statusState[1];
+      var live = liveState[0] === true;
+      var setLive = liveState[1];
+      var evalCode = evalState[0] || "";
+      var setEvalCode = evalState[1];
+      var setStat = function (s) {
+        try { setStatus(String(s)); } catch (e) {}
+      };
+      var savePref = function (k, v) {
+        try {
+          if (prefs && typeof prefs.set === "function") prefs.set(k, v);
+        } catch (e) {}
+      };
+      var theme = ui.getTheme(props) || {};
+      var RN = ui.rn();
+      var L = ui.layout();
+      var Ion = ui.icons();
+      var styles = (L && L.styles) || {};
+      var pressType = RN.View;
+      var names = ["Pressable", "TouchableOpacity", "TouchableHighlight", "View"];
+      for (var i = 0; i < names.length; i++) {
+        try {
+          if (typeof RN[names[i]] === "function") { pressType = RN[names[i]]; break; }
+        } catch (e3) {}
+      }
+      var inputRow = function (key, label, value, onChange, placeholder) {
+        return ui.h(RN.View, {
+          key: key,
+          style: [
+            styles.settingsRowGrouped,
+            styles.settingsRowFirst,
+            styles.settingsRowLast,
+            { borderBottomWidth: 0, backgroundColor: theme.card, paddingVertical: 12, paddingHorizontal: 14, flexDirection: "column", alignItems: "stretch" }
+          ]
+        }, [
+          ui.h(RN.Text, { style: { color: theme.secondaryText, fontSize: 12, marginBottom: 6 }, children: label }),
+          ui.h(RN.TextInput, {
+            value: value,
+            onChangeText: onChange,
+            placeholder: placeholder,
+            placeholderTextColor: theme.secondaryText,
+            autoCapitalize: "none",
+            autoCorrect: false,
+            keyboardType: "url",
+            style: {
+              color: theme.primaryText,
+              backgroundColor: theme.inputBackground || "rgba(127,127,127,0.15)",
+              borderColor: theme.border || theme.inputBorder || "#444",
+              borderWidth: 1,
+              borderRadius: 8,
+              paddingHorizontal: 10,
+              paddingVertical: 8,
+              fontSize: 13
+            }
+          })
+        ]);
+      };
+      var btnRow = function (key, label, onPress, tone) {
+        var color = tone === "danger" ? (theme.accent || "#FF3B30") : theme.primaryText;
+        return ui.h(pressType, {
+          key: key,
+          style: [
+            styles.settingsRowGrouped,
+            styles.settingsRowFirst,
+            styles.settingsRowLast,
+            { borderBottomWidth: 0, backgroundColor: theme.card }
+          ],
+          onPress: onPress
+        }, [
+          ui.h(RN.Text, { style: [styles.settingsRowText, { color: color }], children: label }),
+          Ion && Ion.Ionicons ? ui.h(Ion.Ionicons, { name: tone === "danger" ? "stop-circle-outline" : "play-circle-outline", size: 20, color: theme.secondaryText }) : null
+        ].filter(function (x) { return x !== null; }));
+      };
+      var wrapSection = function (title, rows) {
+        var kids = rows.filter(function (x) { return x !== null; });
+        if (!kids.length) return null;
+        var group = (L && L.SettingsGroup) ? ui.h(L.SettingsGroup, { theme: theme, children: kids[0] }) : kids[0];
+        for (var k = 1; k < kids.length; k++) {
+          var more = (L && L.SettingsGroup) ? ui.h(L.SettingsGroup, { theme: theme, children: kids[k] }) : kids[k];
+          group = ui.h(RN.View, { children: [group, more] });
+        }
+        return ui.h(RN.View, {
+          style: styles.settingsSection,
+          children: [
+            ui.h(RN.Text, {
+              style: [styles.settingsSectionTitle, { color: theme.secondaryText, marginLeft: 16, marginBottom: 8 }],
+              children: title
+            }),
+            group
+          ]
+        });
+      };
+      var onLoadBundle = function () {
+        savePref("debugBundleUrl", bundleUrl);
+        setStat("baixando bundle...");
+        debugLoadBundle(spine, bundleUrl, setStat);
+      };
+      var onToggleServer = function () {
+        savePref("debugServerUrl", serverUrl);
+        if (live) {
+          debugStop();
+          setLive(false);
+          setStat("desconectado");
+          return;
+        }
+        var ok = debugConnect(spine, serverUrl, setStat);
+        setLive(!!ok);
+      };
+      var onEval = function () {
+        var code = evalCode;
+        if (!code) {
+          setStat("digite o JS");
+          return;
+        }
+        setStat("eval...");
+        debugEval(spine, code).then(function (res) {
+          setStat(res.ok ? ("ok: " + String(res.value).slice(0, 300)) : ("erro: " + String(res.error).slice(0, 300)));
+        });
+      };
+      var sections = [
+        wrapSection("Bundle", [
+          inputRow("spine-debug-bundle-url", "Bundle URL", bundleUrl, function (v) { setBundleUrl(v); savePref("debugBundleUrl", v); }, "https://.../dist/spine.js"),
+          btnRow("spine-debug-bundle-load", "Load bundle", onLoadBundle)
+        ]),
+        wrapSection("Remote debug server", [
+          inputRow("spine-debug-server-url", "Server URL (ws:// ou http(s)://)", serverUrl, function (v) { setServerUrl(v); savePref("debugServerUrl", v); }, "ws://host:port"),
+          btnRow("spine-debug-server-toggle", live ? "Disconnect" : "Connect", onToggleServer, live ? "danger" : null)
+        ]),
+        wrapSection("Eval", [
+          inputRow("spine-debug-eval", "JS (usa 'spine'/'SPINE'/'globalThis')", evalCode, setEvalCode, "SPINE.version"),
+          btnRow("spine-debug-eval-run", "Run eval", onEval)
+        ]),
+        wrapSection("Status", [
+          ui.h(RN.View, {
+            key: "spine-debug-status",
+            style: [
+              styles.settingsRowGrouped,
+              styles.settingsRowFirst,
+              styles.settingsRowLast,
+              { borderBottomWidth: 0, backgroundColor: theme.card, paddingVertical: 12, paddingHorizontal: 14 }
+            ]
+          }, [
+            ui.h(RN.Text, { style: [styles.settingsRowText, { color: theme.secondaryText, fontSize: 12 }], children: status || "(sem status)" })
+          ])
+        ])
+      ];
+      return buildPageShell(spine, route, "Debug", sections);
+    }
+
+    function buildDebugPage(spine, route) {
+      var R = ui.react();
+      if (!R || typeof R.useState !== "function") {
+        return null;
+      }
+      return R.createElement(DebugPage, { spine: spine, route: route });
     }
 
     function buildExportPage(spine, route) {
@@ -1168,6 +1500,7 @@
       function injectFixed(ch, type) {
         injectScreen(ch, "SpineUnpatch", "spine-unpatch", buildUnpatchPage, type);
         injectScreen(ch, "SpineExport", "spine-export", buildExportPage, type);
+        injectScreen(ch, "SpineDebug", "spine-debug", buildDebugPage, type);
       }
       function hookLegacyShell(el) {
         var v = el && el.props && el.props.value;
@@ -1177,7 +1510,7 @@
           var r = null;
           try { r = origGet.apply(v, arguments); } catch (eG) { r = null; }
           if (r) return r;
-          var b = name === "SpineUnpatch" ? buildUnpatchPage : (name === "SpineExport" ? buildExportPage : null);
+          var b = name === "SpineUnpatch" ? buildUnpatchPage : (name === "SpineExport" ? buildExportPage : (name === "SpineDebug" ? buildDebugPage : null));
           if (!b) return r;
           return {
             name: name,
