@@ -4694,15 +4694,16 @@
         return { ok: false, reason: "jsx-runtime ausente" };
       }
       var mod = f.module;
-      function injectScreen(ch, name, key, builder) {
-        if (!st.screenType || !Array.isArray(ch)) return null;
+      function injectScreen(ch, name, key, builder, type) {
+        var ST = type || st.legacyScreenType || st.screenType;
+        if (!ST || !Array.isArray(ch)) return null;
         for (var k = 0; k < ch.length; k++) {
           var c = ch[k];
           if (c && c.props && c.props.name === name) return null;
         }
         var R = ui.react();
         if (!R) return null;
-        var screenEl = R.createElement(st.screenType, {
+        var screenEl = R.createElement(ST, {
           name: name,
           headerShown: false,
           key: key,
@@ -4730,21 +4731,67 @@
         }
         return screenEl;
       }
+      function screenTypeOf(el) {
+        if (!el || typeof el !== "object") return null;
+        var p = el.props;
+        if (!p || typeof p.name !== "string" || !p.name) return null;
+        if (p.children == null && p.component == null && p.getComponent == null) return null;
+        var t = el.type;
+        return (t && typeof t === "function") ? t : null;
+      }
+      function injectFixed(ch, type) {
+        injectScreen(ch, "SpineUnpatch", "spine-unpatch", buildUnpatchPage, type);
+        injectScreen(ch, "SpineExport", "spine-export", buildExportPage, type);
+      }
+      function hookLegacyShell(el) {
+        var v = el && el.props && el.props.value;
+        if (!v || typeof v.getLegacyScreen !== "function" || v.__spineLegacyHooked) return;
+        var origGet = v.getLegacyScreen;
+        v.getLegacyScreen = function (name) {
+          var r = null;
+          try { r = origGet.apply(v, arguments); } catch (eG) { r = null; }
+          if (r) return r;
+          var b = name === "SpineUnpatch" ? buildUnpatchPage : (name === "SpineExport" ? buildExportPage : null);
+          if (!b) return r;
+          return {
+            name: name,
+            children: function (props) {
+              try { return b(spine, props); } catch (eB) { return null; }
+            }
+          };
+        };
+        try { v.__spineLegacyHooked = true; } catch (eH) {}
+      }
       function tryNav(el) {
         if (!el || typeof el !== "object") return el;
         var tp = el.type;
-        if (!tp || typeof tp !== "function") return el;
-        var nm = tp.name || tp.displayName || "";
-        if (nm === "Screen") {
+        var nm = (tp && (tp.name || tp.displayName)) || "";
+        if (tp && typeof tp === "function" && nm === "Screen") {
           st.screenType = st.screenType || tp;
+          st.legacyScreenType = st.legacyScreenType || tp;
           return el;
         }
-        if (nm !== "NativeStackNavigator") return el;
         var ch = el.props && el.props.children;
+        if (Array.isArray(ch) && !ch.__spineInjected) {
+          var count = 0;
+          var seenType = null;
+          for (var i = 0; i < ch.length; i++) {
+            var stp = screenTypeOf(ch[i]);
+            if (stp) { count++; seenType = seenType || stp; }
+          }
+          if (count >= 8 && seenType) {
+            st.screenType = st.screenType || seenType;
+            st.legacyScreenType = st.legacyScreenType || seenType;
+            injectFixed(ch, seenType);
+            try { ch.__spineInjected = true; } catch (eI) {}
+            return el;
+          }
+        }
+        if (!tp || typeof tp !== "function") return el;
+        if (nm !== "NativeStackNavigator") { hookLegacyShell(el); return el; }
         if (!Array.isArray(ch)) return el;
         if (!st.screenType) return el;
-        var s1 = injectScreen(ch, "SpineUnpatch", "spine-unpatch", buildUnpatchPage);
-        var s2 = injectScreen(ch, "SpineExport", "spine-export", buildExportPage);
+        injectFixed(ch);
         return el;
       }
       ["jsx", "jsxs"].forEach(function (name) {
